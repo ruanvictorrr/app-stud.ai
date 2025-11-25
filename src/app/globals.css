@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+@theme {
+  /* Color Palette - Dark Premium Tech */
+  --color-background: #0d0d0d;
+  --color-foreground: #ffffff;
+  --color-primary: #00ff8b;
+  --color-primary-dark: #007b5f;
+  --color-card: #1a1a1a;
+  --color-card-hover: #252525;
+  --color-border: #1a1a1a;
+  --color-border-hover: #00ff8b;
+  --color-muted: #6b7280;
+  --color-muted-foreground: #9ca3af;
+
+  /* Spacing */
+  --spacing-xs: 0.25rem;
+  --spacing-sm: 0.5rem;
+  --spacing-md: 1rem;
+  --spacing-lg: 1.5rem;
+  --spacing-xl: 2rem;
+
+  /* Border Radius */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+  --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1);
+  --shadow-glow: 0 0 20px rgba(0, 255, 139, 0.3);
+
+  /* Fonts */
+  --font-inter: "Inter", system-ui, -apple-system, sans-serif;
+  --font-geist-sans: "Geist Sans", system-ui, -apple-system, sans-serif;
+  --font-geist-mono: "Geist Mono", "Courier New", monospace;
+  --font-roboto: "Roboto", system-ui, -apple-system, sans-serif;
+  --font-fira-code: "Fira Code", "Courier New", monospace;
+  --font-jetbrains: "JetBrains Mono", "Courier New", monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Scrollbar Styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-[#0d0d0d];
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-[#1a1a1a] rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-[#252525];
+  }
+}
+
+@layer utilities {
+  /* Text Gradient */
+  .text-gradient {
+    @apply bg-gradient-to-r from-[#00ff8b] to-[#007b5f] bg-clip-text text-transparent;
+  }
+
+  /* Glow Effect */
+  .glow {
+    box-shadow: 0 0 20px rgba(0, 255, 139, 0.3);
+  }
+
+  /* Glass Effect */
+  .glass {
+    @apply backdrop-blur-sm bg-white/5;
+  }
+
+  /* Animation */
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-in-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.3s ease-out;
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Card Hover Effect */
+  .card-hover {
+    @apply transition-all duration-300 hover:scale-[1.02] hover:shadow-xl;
+  }
+}
