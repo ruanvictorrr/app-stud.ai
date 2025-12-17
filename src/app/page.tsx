@@ -15,7 +15,6 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#0D0D0D]">
-      {/* Header */}
       <header className="border-b border-[#1A1A1A] backdrop-blur-sm bg-[#0D0D0D]/80 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
@@ -27,93 +26,44 @@ export default function Home() {
                 Stud.ai
               </h1>
             </div>
-            
-            {/* Desktop Navigation */}
+
             <nav className="hidden md:flex items-center gap-1">
-              <NavButton
-                icon={Upload}
-                label="Upload"
-                active={activeSection === "upload"}
-                onClick={() => setActiveSection("upload")}
-              />
-              <NavButton
-                icon={BookOpen}
-                label="FlashCards"
-                active={activeSection === "flashcards"}
-                onClick={() => setActiveSection("flashcards")}
-              />
-              <NavButton
-                icon={Sparkles}
-                label="Resumos"
-                active={activeSection === "summary"}
-                onClick={() => setActiveSection("summary")}
-              />
-              <NavButton
-                icon={TrendingUp}
-                label="Progresso"
-                active={activeSection === "progress"}
-                onClick={() => setActiveSection("progress")}
-              />
+              <NavButton icon={Upload} label="Upload" active={activeSection === "upload"} onClick={() => setActiveSection("upload")} />
+              <NavButton icon={BookOpen} label="FlashCards" active={activeSection === "flashcards"} onClick={() => setActiveSection("flashcards")} />
+              <NavButton icon={Sparkles} label="Resumos" active={activeSection === "summary"} onClick={() => setActiveSection("summary")} />
+              <NavButton icon={TrendingUp} label="Progresso" active={activeSection === "progress"} onClick={() => setActiveSection("progress")} />
             </nav>
 
-            {/* User Badge */}
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#1A1A1A] border border-[#00FF8B]/20">
               <Trophy className="w-4 h-4 text-[#00FF8B]" />
               <span className="text-sm font-medium">Nível 5</span>
             </div>
           </div>
 
-          {/* Mobile Navigation */}
           <div className="md:hidden flex items-center gap-1 pb-3 overflow-x-auto">
-            <NavButton
-              icon={Upload}
-              label="Upload"
-              active={activeSection === "upload"}
-              onClick={() => setActiveSection("upload")}
-              mobile
-            />
-            <NavButton
-              icon={BookOpen}
-              label="Cards"
-              active={activeSection === "flashcards"}
-              onClick={() => setActiveSection("flashcards")}
-              mobile
-            />
-            <NavButton
-              icon={Sparkles}
-              label="Resumos"
-              active={activeSection === "summary"}
-              onClick={() => setActiveSection("summary")}
-              mobile
-            />
-            <NavButton
-              icon={TrendingUp}
-              label="Progresso"
-              active={activeSection === "progress"}
-              onClick={() => setActiveSection("progress")}
-              mobile
-            />
+            <NavButton icon={Upload} label="Upload" active={activeSection === "upload"} onClick={() => setActiveSection("upload")} mobile />
+            <NavButton icon={BookOpen} label="Cards" active={activeSection === "flashcards"} onClick={() => setActiveSection("flashcards")} mobile />
+            <NavButton icon={Sparkles} label="Resumos" active={activeSection === "summary"} onClick={() => setActiveSection("summary")} mobile />
+            <NavButton icon={TrendingUp} label="Progresso" active={activeSection === "progress"} onClick={() => setActiveSection("progress")} mobile />
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {activeSection === "upload" && (
-          <UploadSection onDataProcessed={setStudyData} />
+          <UploadSection
+            onDataProcessed={(data) => {
+              setStudyData(data);
+            }}
+            onNavigate={(section) => setActiveSection(section)}
+          />
         )}
-        {activeSection === "flashcards" && (
-          <FlashcardsSection data={studyData} />
-        )}
-        {activeSection === "summary" && (
-          <SummarySection data={studyData} />
-        )}
-        {activeSection === "progress" && (
-          <ProgressSection />
-        )}
+
+        {activeSection === "flashcards" && <FlashcardsSection data={studyData} />}
+        {activeSection === "summary" && <SummarySection data={studyData} />}
+        {activeSection === "progress" && <ProgressSection />}
       </main>
 
-      {/* Footer with Community Preview */}
       <footer className="border-t border-[#1A1A1A] mt-12 py-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -121,9 +71,7 @@ export default function Home() {
               <Users className="w-4 h-4 text-[#00FF8B]" />
               <span>+1.2k estudantes ativos hoje</span>
             </div>
-            <div className="text-sm text-gray-500">
-              Feito com 💚 para estudantes
-            </div>
+            <div className="text-sm text-gray-500">Feito com 💚 para estudantes</div>
           </div>
         </div>
       </footer>
@@ -157,7 +105,7 @@ function NavButton({
         }
       `}
     >
-      <Icon className={mobile ? "w-4 h-4" : "w-4 h-4"} />
+      <Icon className="w-4 h-4" />
       <span>{label}</span>
     </button>
   );

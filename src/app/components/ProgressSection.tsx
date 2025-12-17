@@ -1,194 +1,172 @@
 "use client";
 
-import { Trophy, Target, Flame, TrendingUp, Award, Star } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { loadMaterial, onMaterialUpdated, Flashcard } from "@/lib/studyMaterialStore";
+import { makeProgressKey, loadProgress, onProgressUpdated, clearProgress } from "@/lib/studyProgressStore";
 
-export default function ProgressSection() {
-  // Mock data para demonstração
-  const stats = {
-    studyStreak: 7,
-    totalCards: 156,
-    masteredCards: 89,
-    studyTime: 12.5,
-    level: 5,
-    xp: 2340,
-    nextLevelXp: 3000,
-  };
-
-  const weeklyProgress = [
-    { day: "Seg", hours: 2.5, cards: 15 },
-    { day: "Ter", hours: 1.8, cards: 12 },
-    { day: "Qua", hours: 3.2, cards: 20 },
-    { day: "Qui", hours: 2.0, cards: 16 },
-    { day: "Sex", hours: 1.5, cards: 10 },
-    { day: "Sáb", hours: 0.8, cards: 5 },
-    { day: "Dom", hours: 1.2, cards: 8 },
-  ];
-
-  const badges = [
-    { id: 1, name: "Iniciante", icon: "🎯", earned: true },
-    { id: 2, name: "Dedicado", icon: "💪", earned: true },
-    { id: 3, name: "Sequência 7 dias", icon: "🔥", earned: true },
-    { id: 4, name: "100 Cards", icon: "📚", earned: true },
-    { id: 5, name: "Mestre", icon: "👑", earned: false },
-    { id: 6, name: "Lendário", icon: "⭐", earned: false },
-  ];
-
-  const maxHours = Math.max(...weeklyProgress.map((d) => d.hours));
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="text-center space-y-4">
-        <h2 className="text-3xl sm:text-4xl font-bold text-white">
-          Seu Progresso
-        </h2>
-        <p className="text-gray-400">
-          Continue assim! Você está indo muito bem 🚀
-        </p>
-      </div>
-
-      {/* Level Card */}
-      <div className="p-6 rounded-2xl bg-gradient-to-br from-[#00FF8B]/10 to-[#007B5F]/10 border border-[#00FF8B]/30">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#00FF8B] to-[#007B5F] flex items-center justify-center">
-              <Trophy className="w-6 h-6 text-[#0D0D0D]" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-400">Nível Atual</p>
-              <p className="text-2xl font-bold text-white">{stats.level}</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <p className="text-sm text-gray-400">XP</p>
-            <p className="text-lg font-bold text-[#00FF8B]">
-              {stats.xp} / {stats.nextLevelXp}
-            </p>
-          </div>
-        </div>
-        <div className="h-3 bg-[#1A1A1A] rounded-full overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-[#00FF8B] to-[#007B5F] transition-all duration-500"
-            style={{ width: `${(stats.xp / stats.nextLevelXp) * 100}%` }}
-          />
-        </div>
-        <p className="text-xs text-gray-400 mt-2 text-center">
-          {stats.nextLevelXp - stats.xp} XP para o próximo nível
-        </p>
-      </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          icon={Flame}
-          label="Sequência"
-          value={`${stats.studyStreak} dias`}
-          color="text-orange-400"
-        />
-        <StatCard
-          icon={Target}
-          label="Cards Dominados"
-          value={`${stats.masteredCards}/${stats.totalCards}`}
-          color="text-[#00FF8B]"
-        />
-        <StatCard
-          icon={TrendingUp}
-          label="Tempo de Estudo"
-          value={`${stats.studyTime}h`}
-          color="text-blue-400"
-        />
-        <StatCard
-          icon={Award}
-          label="Badges"
-          value={`${badges.filter((b) => b.earned).length}/${badges.length}`}
-          color="text-purple-400"
-        />
-      </div>
-
-      {/* Weekly Progress Chart */}
-      <div className="p-6 rounded-xl bg-[#1A1A1A] border border-[#252525]">
-        <h3 className="text-lg font-bold text-white mb-6">
-          Atividade Semanal
-        </h3>
-        <div className="flex items-end justify-between gap-2 h-48">
-          {weeklyProgress.map((day, index) => (
-            <div key={index} className="flex-1 flex flex-col items-center gap-2">
-              <div className="relative w-full flex flex-col items-center justify-end flex-1">
-                <div
-                  className="w-full bg-gradient-to-t from-[#00FF8B] to-[#007B5F] rounded-t-lg transition-all duration-500 hover:opacity-80 cursor-pointer group relative"
-                  style={{ height: `${(day.hours / maxHours) * 100}%` }}
-                >
-                  <div className="absolute -top-8 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-[#0D0D0D] px-2 py-1 rounded text-xs whitespace-nowrap">
-                    {day.hours}h • {day.cards} cards
-                  </div>
-                </div>
-              </div>
-              <span className="text-xs text-gray-400 font-medium">
-                {day.day}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Badges */}
-      <div className="p-6 rounded-xl bg-[#1A1A1A] border border-[#252525]">
-        <div className="flex items-center gap-2 mb-6">
-          <Star className="w-5 h-5 text-[#00FF8B]" />
-          <h3 className="text-lg font-bold text-white">Conquistas</h3>
-        </div>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-4">
-          {badges.map((badge) => (
-            <div
-              key={badge.id}
-              className={`
-                flex flex-col items-center gap-2 p-4 rounded-xl border transition-all duration-300
-                ${
-                  badge.earned
-                    ? "bg-[#00FF8B]/10 border-[#00FF8B]/30 hover:scale-105"
-                    : "bg-[#0D0D0D] border-[#252525] opacity-40"
-                }
-              `}
-            >
-              <div className="text-3xl">{badge.icon}</div>
-              <span className="text-xs text-center font-medium text-gray-300">
-                {badge.name}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Motivational Card */}
-      <div className="p-6 rounded-xl bg-gradient-to-r from-[#00FF8B]/10 to-[#007B5F]/10 border border-[#00FF8B]/20 text-center">
-        <p className="text-lg font-semibold text-white mb-2">
-          🎉 Parabéns pela dedicação!
-        </p>
-        <p className="text-sm text-gray-400">
-          Você está no caminho certo. Continue estudando para desbloquear mais
-          conquistas!
-        </p>
-      </div>
-    </div>
-  );
+function pct(n: number) {
+  return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  color,
-}: {
-  icon: any;
-  label: string;
-  value: string;
-  color: string;
-}) {
+function labelDifficulty(d: string) {
+  if (d === "easy") return "Fácil";
+  if (d === "hard") return "Difícil";
+  return "Médio";
+}
+
+export default function ProgressSection() {
+  const [topic, setTopic] = useState("");
+  const [cards, setCards] = useState<Flashcard[]>([]);
+  const [knownIds, setKnownIds] = useState<number[]>([]);
+  const [reviewIds, setReviewIds] = useState<number[]>([]);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+
+  const key = useMemo(() => makeProgressKey(topic, cards.length), [topic, cards.length]);
+
+  const refresh = () => {
+    const m = loadMaterial();
+    const t = m?.topic ?? "";
+    const c = m?.flashcards ?? [];
+
+    setTopic(t);
+    setCards(c);
+
+    const k = makeProgressKey(t, c.length);
+    const p = loadProgress(k);
+
+    setKnownIds(p?.knownIds ?? []);
+    setReviewIds(p?.reviewIds ?? []);
+    setUpdatedAt(p?.updatedAt ?? null);
+  };
+
+  useEffect(() => {
+    refresh();
+    const off1 = onMaterialUpdated(refresh);
+    const off2 = onProgressUpdated(refresh);
+    return () => {
+      off1?.();
+      off2?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const total = cards.length;
+  const known = knownIds.length;
+  const review = reviewIds.length;
+
+  const masteredPct = total ? pct((known / total) * 100) : 0;
+
+  const remaining = Math.max(0, total - known - review);
+
+  const byDifficulty = useMemo(() => {
+    const diffs: Array<"easy" | "medium" | "hard"> = ["easy", "medium", "hard"];
+    return diffs.map((d) => {
+      const group = cards.filter((c) => c.difficulty === d);
+      const totalD = group.length;
+      const knownD = group.filter((c) => knownIds.includes(c.id)).length;
+      const reviewD = group.filter((c) => reviewIds.includes(c.id)).length;
+      const pctD = totalD ? pct((knownD / totalD) * 100) : 0;
+      return { d, totalD, knownD, reviewD, pctD };
+    });
+  }, [cards, knownIds, reviewIds]);
+
+  if (!total) {
+    return (
+      <section className="w-full max-w-5xl mx-auto mt-10 rounded-2xl border border-white/10 bg-white/5 p-8 text-center">
+        <h2 className="text-2xl font-semibold">Progresso</h2>
+        <p className="mt-2 opacity-70">Faça upload e gere flashcards para acompanhar seu progresso.</p>
+      </section>
+    );
+  }
+
   return (
-    <div className="p-4 rounded-xl bg-[#1A1A1A] border border-[#252525] hover:border-[#00FF8B]/30 transition-all duration-300">
-      <Icon className={`w-5 h-5 ${color} mb-2`} />
-      <p className="text-xs text-gray-400 mb-1">{label}</p>
-      <p className="text-xl font-bold text-white">{value}</p>
-    </div>
+    <section className="w-full max-w-5xl mx-auto mt-10">
+      <div className="text-center">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-sm opacity-80">
+          📊 Progresso
+        </div>
+        <h2 className="text-3xl font-semibold mt-4">Acompanhe seu Progresso</h2>
+        {topic ? <p className="mt-2 opacity-70">{topic}</p> : null}
+      </div>
+
+      {/* Barra principal */}
+      <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <div className="text-sm opacity-70">Dominado</div>
+            <div className="text-3xl font-semibold">{masteredPct}%</div>
+          </div>
+
+          <div className="text-sm opacity-70">
+            {updatedAt ? `Atualizado: ${new Date(updatedAt).toLocaleString()}` : ""}
+          </div>
+        </div>
+
+        <div className="mt-5 h-3 rounded-full bg-white/10 overflow-hidden">
+          <div className="h-full bg-green-500/40 rounded-full" style={{ width: `${masteredPct}%` }} />
+        </div>
+
+        <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+            <div className="text-sm opacity-70">Conhecidos</div>
+            <div className="text-2xl font-semibold">{known}</div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+            <div className="text-sm opacity-70">Para revisar</div>
+            <div className="text-2xl font-semibold">{review}</div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+            <div className="text-sm opacity-70">Não vistos</div>
+            <div className="text-2xl font-semibold">{remaining}</div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            onClick={() => clearProgress(key)}
+            className="px-4 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-sm"
+          >
+            Resetar progresso
+          </button>
+        </div>
+      </div>
+
+      {/* Por dificuldade */}
+      <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        {byDifficulty.map((x) => (
+          <div key={x.d} className="rounded-2xl border border-white/10 bg-white/5 p-5">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold">{labelDifficulty(x.d)}</div>
+              <div className="text-sm opacity-70">{x.pctD}%</div>
+            </div>
+
+            <div className="mt-3 h-2 rounded-full bg-white/10 overflow-hidden">
+              <div
+                className={[
+                  "h-full rounded-full",
+                  x.d === "easy" ? "bg-green-500/40" : x.d === "hard" ? "bg-red-500/40" : "bg-yellow-500/40",
+                ].join(" ")}
+                style={{ width: `${x.pctD}%` }}
+              />
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-xl border border-white/10 bg-black/10 p-3">
+                <div className="text-xs opacity-70">Total</div>
+                <div className="text-lg font-semibold">{x.totalD}</div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/10 p-3">
+                <div className="text-xs opacity-70">Conhecidos</div>
+                <div className="text-lg font-semibold">{x.knownD}</div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/10 p-3">
+                <div className="text-xs opacity-70">Revisar</div>
+                <div className="text-lg font-semibold">{x.reviewD}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
