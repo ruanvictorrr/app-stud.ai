@@ -1,45 +1,45 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { loadMaterial, onMaterialUpdated, Flashcard } from "@/lib/studyMaterialStore";
+import { loadMaterial, onMaterialUpdated } from "@/lib/studyMaterialStore";
 import { makeProgressKey, loadProgress, onProgressUpdated, clearProgress } from "@/lib/studyProgressStore";
 
+function cn(...s: Array<string | false | null | undefined>) {
+  return s.filter(Boolean).join(" ");
+}
 function pct(n: number) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
-
-function labelDifficulty(d: string) {
-  if (d === "easy") return "Fácil";
-  if (d === "hard") return "Difícil";
-  return "Médio";
+function uniq(arr: number[]) {
+  return Array.from(new Set(arr));
 }
 
 export default function ProgressSection() {
-  const [topic, setTopic] = useState("");
-  const [cards, setCards] = useState<Flashcard[]>([]);
+  const [topic, setTopic] = useState<string>("");
+  const [totalCards, setTotalCards] = useState<number>(0);
+  const [progressKey, setProgressKey] = useState<string>("");
+
   const [knownIds, setKnownIds] = useState<number[]>([]);
   const [reviewIds, setReviewIds] = useState<number[]>([]);
-  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
-
-  const key = useMemo(() => makeProgressKey(topic, cards.length), [topic, cards.length]);
-
-  const refresh = () => {
-    const m = loadMaterial();
-    const t = m?.topic ?? "";
-    const c = m?.flashcards ?? [];
-
-    setTopic(t);
-    setCards(c);
-
-    const k = makeProgressKey(t, c.length);
-    const p = loadProgress(k);
-
-    setKnownIds(p?.knownIds ?? []);
-    setReviewIds(p?.reviewIds ?? []);
-    setUpdatedAt(p?.updatedAt ?? null);
-  };
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
 
   useEffect(() => {
+    const refresh = () => {
+      const m = loadMaterial();
+      const count = m?.flashcards?.length ?? 0;
+
+      setTopic(m?.topic ?? "");
+      setTotalCards(count);
+
+      const key = makeProgressKey(m?.topic ?? "deck", count);
+      setProgressKey(key);
+
+      const p = loadProgress(key);
+      setKnownIds(p?.knownIds ?? []);
+      setReviewIds(p?.reviewIds ?? []);
+      setUpdatedAt(p?.updatedAt ?? null);
+    };
+
     refresh();
     const off1 = onMaterialUpdated(refresh);
     const off2 = onProgressUpdated(refresh);
@@ -47,126 +47,142 @@ export default function ProgressSection() {
       off1?.();
       off2?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const total = cards.length;
-  const known = knownIds.length;
-  const review = reviewIds.length;
+  const known = useMemo(() => new Set(knownIds), [knownIds]);
+  const review = useMemo(() => new Set(reviewIds), [reviewIds]);
 
-  const masteredPct = total ? pct((known / total) * 100) : 0;
+  const doneCount = uniq([...knownIds, ...reviewIds]).length;
+  const donePct = totalCards ? pct((doneCount / totalCards) * 100) : 0;
 
-  const remaining = Math.max(0, total - known - review);
+  const knownCount = known.size;
+  const reviewCount = review.size;
+  const remainingCount = Math.max(0, totalCards - doneCount);
 
-  const byDifficulty = useMemo(() => {
-    const diffs: Array<"easy" | "medium" | "hard"> = ["easy", "medium", "hard"];
-    return diffs.map((d) => {
-      const group = cards.filter((c) => c.difficulty === d);
-      const totalD = group.length;
-      const knownD = group.filter((c) => knownIds.includes(c.id)).length;
-      const reviewD = group.filter((c) => reviewIds.includes(c.id)).length;
-      const pctD = totalD ? pct((knownD / totalD) * 100) : 0;
-      return { d, totalD, knownD, reviewD, pctD };
-    });
-  }, [cards, knownIds, reviewIds]);
-
-  if (!total) {
+  if (!totalCards) {
     return (
       <section className="w-full max-w-5xl mx-auto mt-10 rounded-2xl border border-white/10 bg-white/5 p-8 text-center">
         <h2 className="text-2xl font-semibold">Progresso</h2>
-        <p className="mt-2 opacity-70">Faça upload e gere flashcards para acompanhar seu progresso.</p>
+        <p className="mt-2 opacity-70">Gere um material (upload) para acompanhar seu progresso.</p>
       </section>
     );
   }
 
   return (
     <section className="w-full max-w-5xl mx-auto mt-10">
-      <div className="text-center">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-sm opacity-80">
-          📊 Progresso
-        </div>
-        <h2 className="text-3xl font-semibold mt-4">Acompanhe seu Progresso</h2>
-        {topic ? <p className="mt-2 opacity-70">{topic}</p> : null}
-      </div>
-
-      {/* Barra principal */}
-      <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
-        <div className="flex items-center justify-between gap-4 flex-wrap">
+      {/* Header premium */}
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
           <div>
-            <div className="text-sm opacity-70">Dominado</div>
-            <div className="text-3xl font-semibold">{masteredPct}%</div>
+            <div className="text-xs opacity-70">Progresso</div>
+            <h2 className="text-2xl font-semibold mt-1">{topic || "Seu deck"}</h2>
+            <div className="mt-2 text-sm opacity-70">
+              Acompanhe seu avanço no mesmo padrão visual do Flashcards.
+            </div>
           </div>
 
+          <div className="flex flex-wrap gap-2">
+            <Chip tone="green" label={`✅ Conhecidos: ${knownCount}`} />
+            <Chip tone="red" label={`❌ Revisar: ${reviewCount}`} />
+            <Chip tone="neutral" label={`⏳ Restantes: ${remainingCount}`} />
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <div className="mt-5">
+          <div className="flex items-center justify-between text-xs opacity-70">
+            <span>Progresso geral</span>
+            <span>{donePct}%</span>
+          </div>
+          <div className="mt-2 h-2 w-full rounded-full bg-black/30 overflow-hidden border border-white/10">
+            <div className="h-full rounded-full bg-[#00FF8B]/70" style={{ width: `${donePct}%` }} />
+          </div>
+
+          <div className="mt-3 text-xs opacity-60">
+            {updatedAt ? `Última atualização: ${new Date(updatedAt).toLocaleString()}` : "Ainda sem atualizações"}
+          </div>
+        </div>
+
+        {/* Action row */}
+        <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="text-sm opacity-70">
-            {updatedAt ? `Atualizado: ${new Date(updatedAt).toLocaleString()}` : ""}
+            Total de cards: <b className="opacity-90">{totalCards}</b> • Concluídos:{" "}
+            <b className="opacity-90">{doneCount}</b>
           </div>
-        </div>
 
-        <div className="mt-5 h-3 rounded-full bg-white/10 overflow-hidden">
-          <div className="h-full bg-green-500/40 rounded-full" style={{ width: `${masteredPct}%` }} />
-        </div>
-
-        <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-            <div className="text-sm opacity-70">Conhecidos</div>
-            <div className="text-2xl font-semibold">{known}</div>
-          </div>
-          <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-            <div className="text-sm opacity-70">Para revisar</div>
-            <div className="text-2xl font-semibold">{review}</div>
-          </div>
-          <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-            <div className="text-sm opacity-70">Não vistos</div>
-            <div className="text-2xl font-semibold">{remaining}</div>
-          </div>
-        </div>
-
-        <div className="mt-6 flex justify-end">
           <button
-            onClick={() => clearProgress(key)}
-            className="px-4 py-2 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-sm"
+            onClick={() => {
+              if (!progressKey) return;
+              clearProgress(progressKey);
+            }}
+            className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm hover:bg-white/10"
           >
-            Resetar progresso
+            Limpar progresso deste deck
           </button>
         </div>
       </div>
 
-      {/* Por dificuldade */}
+      {/* Breakdown premium */}
       <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
-        {byDifficulty.map((x) => (
-          <div key={x.d} className="rounded-2xl border border-white/10 bg-white/5 p-5">
-            <div className="flex items-center justify-between">
-              <div className="font-semibold">{labelDifficulty(x.d)}</div>
-              <div className="text-sm opacity-70">{x.pctD}%</div>
-            </div>
+        <StatCard title="Conhecidos" value={knownCount} subtitle="Você marcou como acertei" tone="green" />
+        <StatCard title="Revisar" value={reviewCount} subtitle="Precisa reforçar" tone="red" />
+        <StatCard title="Restantes" value={remainingCount} subtitle="Ainda não avaliados" tone="neutral" />
+      </div>
 
-            <div className="mt-3 h-2 rounded-full bg-white/10 overflow-hidden">
-              <div
-                className={[
-                  "h-full rounded-full",
-                  x.d === "easy" ? "bg-green-500/40" : x.d === "hard" ? "bg-red-500/40" : "bg-yellow-500/40",
-                ].join(" ")}
-                style={{ width: `${x.pctD}%` }}
-              />
-            </div>
-
-            <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-xl border border-white/10 bg-black/10 p-3">
-                <div className="text-xs opacity-70">Total</div>
-                <div className="text-lg font-semibold">{x.totalD}</div>
-              </div>
-              <div className="rounded-xl border border-white/10 bg-black/10 p-3">
-                <div className="text-xs opacity-70">Conhecidos</div>
-                <div className="text-lg font-semibold">{x.knownD}</div>
-              </div>
-              <div className="rounded-xl border border-white/10 bg-black/10 p-3">
-                <div className="text-xs opacity-70">Revisar</div>
-                <div className="text-lg font-semibold">{x.reviewD}</div>
-              </div>
-            </div>
-          </div>
-        ))}
+      {/* Dica */}
+      <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
+        <div className="font-semibold">Dica de estudo</div>
+        <p className="mt-2 opacity-70 leading-relaxed">
+          Use sessões curtas (10–20 cards) e marque “Revisar” sem medo. O ideal é voltar nesses cards no dia seguinte.
+        </p>
       </div>
     </section>
+  );
+}
+
+function Chip({ label, tone }: { label: string; tone: "green" | "red" | "neutral" }) {
+  const cls =
+    tone === "green"
+      ? "border-[#00FF8B]/25 bg-[#00FF8B]/10 text-[#00FF8B]"
+      : tone === "red"
+      ? "border-red-500/25 bg-red-500/10 text-red-200"
+      : "border-white/10 bg-black/20 text-white/70";
+  return <span className={cn("text-xs px-3 py-1 rounded-full border", cls)}>{label}</span>;
+}
+
+function StatCard({
+  title,
+  value,
+  subtitle,
+  tone,
+}: {
+  title: string;
+  value: number;
+  subtitle: string;
+  tone: "green" | "red" | "neutral";
+}) {
+  const border =
+    tone === "green"
+      ? "border-[#00FF8B]/20"
+      : tone === "red"
+      ? "border-red-500/20"
+      : "border-white/10";
+
+  const bg =
+    tone === "green"
+      ? "bg-[#00FF8B]/10"
+      : tone === "red"
+      ? "bg-red-500/10"
+      : "bg-black/20";
+
+  const text =
+    tone === "green" ? "text-[#00FF8B]" : tone === "red" ? "text-red-200" : "text-white/80";
+
+  return (
+    <div className={cn("rounded-2xl border bg-white/5 p-6", border)}>
+      <div className="text-xs opacity-70">{title}</div>
+      <div className={cn("mt-2 text-3xl font-bold", text)}>{value}</div>
+      <div className={cn("mt-3 rounded-xl border p-3 text-sm opacity-90", border, bg)}>{subtitle}</div>
+    </div>
   );
 }

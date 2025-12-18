@@ -1,13 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Upload, Sparkles, BookOpen, TrendingUp, Trophy, Users } from "lucide-react";
+import { Upload, Sparkles, BookOpen, TrendingUp, Trophy, Users, User } from "lucide-react";
 import UploadSection from "./components/UploadSection";
 import FlashcardsSection from "./components/FlashcardsSection";
 import SummarySection from "./components/SummarySection";
 import ProgressSection from "./components/ProgressSection";
+import ProfileSection from "./components/ProfileSection";
 
-type Section = "upload" | "flashcards" | "summary" | "progress";
+type Section = "upload" | "flashcards" | "summary" | "progress" | "profile";
 
 export default function Home() {
   const [activeSection, setActiveSection] = useState<Section>("upload");
@@ -32,6 +33,7 @@ export default function Home() {
               <NavButton icon={BookOpen} label="FlashCards" active={activeSection === "flashcards"} onClick={() => setActiveSection("flashcards")} />
               <NavButton icon={Sparkles} label="Resumos" active={activeSection === "summary"} onClick={() => setActiveSection("summary")} />
               <NavButton icon={TrendingUp} label="Progresso" active={activeSection === "progress"} onClick={() => setActiveSection("progress")} />
+              <NavButton icon={User} label="Perfil" active={activeSection === "profile"} onClick={() => setActiveSection("profile")} />
             </nav>
 
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#1A1A1A] border border-[#00FF8B]/20">
@@ -45,23 +47,31 @@ export default function Home() {
             <NavButton icon={BookOpen} label="Cards" active={activeSection === "flashcards"} onClick={() => setActiveSection("flashcards")} mobile />
             <NavButton icon={Sparkles} label="Resumos" active={activeSection === "summary"} onClick={() => setActiveSection("summary")} mobile />
             <NavButton icon={TrendingUp} label="Progresso" active={activeSection === "progress"} onClick={() => setActiveSection("progress")} mobile />
+            <NavButton icon={User} label="Perfil" active={activeSection === "profile"} onClick={() => setActiveSection("profile")} mobile />
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-        {activeSection === "upload" && (
-          <UploadSection
-            onDataProcessed={(data) => {
-              setStudyData(data);
-            }}
-            onNavigate={(section) => setActiveSection(section)}
-          />
-        )}
+        <div className={activeSection === "upload" ? "block" : "hidden"}>
+          <UploadSection onDataProcessed={setStudyData} onNavigate={setActiveSection} />
+        </div>
 
-        {activeSection === "flashcards" && <FlashcardsSection data={studyData} />}
-        {activeSection === "summary" && <SummarySection data={studyData} />}
-        {activeSection === "progress" && <ProgressSection />}
+        <div className={activeSection === "flashcards" ? "block" : "hidden"}>
+          <FlashcardsSection data={studyData} />
+        </div>
+
+        <div className={activeSection === "summary" ? "block" : "hidden"}>
+          <SummarySection data={studyData} />
+        </div>
+
+        <div className={activeSection === "progress" ? "block" : "hidden"}>
+          <ProgressSection />
+        </div>
+
+        <div className={activeSection === "profile" ? "block" : "hidden"}>
+          <ProfileSection onNavigate={setActiveSection} />
+        </div>
       </main>
 
       <footer className="border-t border-[#1A1A1A] mt-12 py-8">

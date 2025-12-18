@@ -16,11 +16,13 @@ type Status = "idle" | "selected" | "uploading" | "success" | "error";
 
 const PREFS_KEY = "studai:genPrefs:v1";
 
+function cn(...s: Array<string | false | null | undefined>) {
+  return s.filter(Boolean).join(" ");
+}
 function clampInt(n: number, min: number, max: number) {
   if (!Number.isFinite(n)) return min;
   return Math.max(min, Math.min(max, Math.trunc(n)));
 }
-
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes)) return "";
   const units = ["B", "KB", "MB", "GB"];
@@ -31,29 +33,6 @@ function formatBytes(bytes: number) {
     i++;
   }
   return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-function difficultyLabel(d: DifficultyUI) {
-  if (d === "easy") return "fácil";
-  if (d === "medium") return "médio";
-  if (d === "hard") return "difícil";
-  return "aleatório";
-}
-
-function summaryLabel(s: SummaryStyleUI) {
-  return s === "bullets" ? "resumo bullets" : "resumo elaborado";
-}
-
-function isApiSuccess(json: any) {
-  if (!json) return false;
-  return json?.success === true || json?.data?.success === true;
-}
-
-function extractPayload(json: any) {
-  if (!json) return null;
-  if (json?.data && json?.success === true) return json.data;
-  if (json?.data?.data && json?.data?.success === true) return json.data.data;
-  return json?.data ?? null;
 }
 
 export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
@@ -70,18 +49,10 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
 
   const [message, setMessage] = useState<string | null>(null);
   const [lastProcessedAt, setLastProcessedAt] = useState<string | null>(null);
-
   const [lastMaterial, setLastMaterial] = useState<any>(null);
-  const [lastApiJson, setLastApiJson] = useState<any>(null);
 
-  // ✅ cooldown p/ 429 (quota)
   const [cooldownSec, setCooldownSec] = useState<number>(0);
-
-  const [lastUsed, setLastUsed] = useState<{
-    flashcardsCount: number;
-    difficulty: DifficultyUI;
-    summaryStyle: SummaryStyleUI;
-  } | null>(null);
+  const [lastApiJson, setLastApiJson] = useState<any>(null);
 
   useEffect(() => {
     try {
@@ -100,108 +71,78 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
     } catch {}
   }, [flashcardsCount, difficulty, summaryStyle]);
 
-  // ✅ timer do cooldown
   useEffect(() => {
     if (cooldownSec <= 0) return;
-    const t = window.setInterval(() => {
-      setCooldownSec((s) => (s <= 1 ? 0 : s - 1));
-    }, 1000);
+    const t = window.setInterval(() => setCooldownSec((s) => (s <= 1 ? 0 : s - 1)), 1000);
     return () => window.clearInterval(t);
   }, [cooldownSec]);
 
-  function onPickFile() {
+  function pickFile() {
     setMessage(null);
     inputRef.current?.click();
   }
 
-  function clearSelection() {
+  function clearAll() {
     setSelectedFile(null);
     setStatus("idle");
+    setIsUploading(false);
     setMessage(null);
     setLastProcessedAt(null);
-    setLastUsed(null);
     setLastMaterial(null);
     setLastApiJson(null);
     setCooldownSec(0);
   }
 
-  async function handleUpload(file: File, opts?: { silentSelectMessage?: boolean }) {
-    if (!opts?.silentSelectMessage) setMessage(null);
-
+  async function handleUpload(file: File) {
     setIsUploading(true);
     setStatus("uploading");
     setMessage("Processando…");
     setCooldownSec(0);
 
-    const used = {
-      flashcardsCount: clampInt(flashcardsCount, 1, 50),
-      difficulty,
-      summaryStyle,
-    };
-    setLastUsed(used);
-
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("flashcardsCount", String(used.flashcardsCount));
-      formData.append("flashcardsDifficulty", used.difficulty);
-      formData.append("summaryStyle", used.summaryStyle);
+      formData.append("flashcardsCount", String(clampInt(flashcardsCount, 1, 50)));
+      formData.append("flashcardsDifficulty", difficulty);
+      formData.append("summaryStyle", summaryStyle);
 
-      const response = await fetch("/api/process-study-material", {
-        method: "POST",
-        body: formData,
-      });
-
+      const response = await fetch("/api/process-study-material", { method: "POST", body: formData });
       const json = await response.json().catch(() => null);
       setLastApiJson(json);
 
-      // ✅ 429: quota — mostra countdown
+      // quota => 429 com retryAfterSeconds
       if (response.status === 429) {
         const retry = Number(json?.retryAfterSeconds);
-        const retrySec = Number.isFinite(retry) ? retry : 45;
-
+        const retrySec = Number.isFinite(retry) ? retry : 30;
         setStatus("error");
         setCooldownSec(retrySec);
         setLastProcessedAt(new Date().toLocaleTimeString());
-        setMessage(`Limite da cota do Gemini atingido. Tente novamente em ${retrySec}s.`);
+        setMessage(`Limite atingido. Tente novamente em ${retrySec}s.`);
         return;
       }
 
-      const ok = response.ok && isApiSuccess(json);
-      const payload = extractPayload(json);
-
-      if (!ok || !payload) {
-        const errMsg =
-          json?.details ||
-          json?.error ||
-          json?.data?.details ||
-          json?.data?.error ||
-          `Falha ao processar (HTTP ${response.status})`;
-        throw new Error(errMsg);
+      if (!response.ok || !json?.success) {
+        throw new Error(json?.details || json?.error || "Falha ao processar arquivo");
       }
 
-      // ✅ NORMALIZA + SALVA NO STORE
       const material =
-        normalizeFromApi(payload) ||
-        normalizeFromApi({ success: true, data: payload }) ||
-        normalizeFromApi(json);
+        normalizeFromApi(json) ||
+        normalizeFromApi(json?.data) ||
+        normalizeFromApi({ success: true, data: json?.data });
 
-      if (!material) {
-        throw new Error("A API respondeu, mas não veio topic/flashcards/summary no formato esperado.");
-      }
+      if (!material) throw new Error("Resposta inválida: faltou topic/flashcards/summary.");
 
       saveMaterial(material);
       setLastMaterial(material);
       onDataProcessed?.(material);
 
       setStatus("success");
-      setMessage("Arquivo processado com sucesso! ✅");
       setLastProcessedAt(new Date().toLocaleTimeString());
+      setMessage("Arquivo processado com sucesso ✅");
     } catch (e: any) {
-      console.error(e);
       setStatus("error");
-      setMessage(e?.message || "Falha ao processar arquivo ❌");
       setLastProcessedAt(new Date().toLocaleTimeString());
+      setMessage(e?.message || "Erro inesperado ❌");
     } finally {
       setIsUploading(false);
     }
@@ -210,12 +151,10 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
   async function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] || null;
     if (!file) return;
-
     setSelectedFile(file);
     setStatus("selected");
     setMessage("Arquivo selecionado. Processando…");
-
-    await handleUpload(file, { silentSelectMessage: true });
+    await handleUpload(file);
     e.target.value = "";
   }
 
@@ -223,35 +162,25 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0] || null;
     if (!file) return;
-
     setSelectedFile(file);
     setStatus("selected");
     setMessage("Arquivo selecionado. Processando…");
-
-    await handleUpload(file, { silentSelectMessage: true });
+    await handleUpload(file);
   }
 
   function onDragOver(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
   }
 
-  async function onRegenerate() {
+  async function regenerate() {
     if (!selectedFile) return;
-    setMessage("Reprocessando com as novas configurações…");
-    await handleUpload(selectedFile, { silentSelectMessage: true });
+    await handleUpload(selectedFile);
   }
-
-  const lastUsedPreview =
-    lastUsed
-      ? `${lastUsed.flashcardsCount} flashcards • ${difficultyLabel(lastUsed.difficulty)} • ${summaryLabel(
-          lastUsed.summaryStyle
-        )}`
-      : null;
 
   const canNavigate = !!lastMaterial;
 
   return (
-    <section className="w-full">
+    <section className="w-full max-w-5xl mx-auto mt-10">
       <input
         ref={inputRef}
         type="file"
@@ -260,22 +189,27 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
         accept="image/*,application/pdf,text/plain"
       />
 
-      <div className="mb-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      {/* Header premium */}
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
           <div>
-            <div className="text-sm opacity-70">Configurações</div>
-            <div className="text-base font-semibold">Como gerar seus materiais</div>
+            <div className="text-xs opacity-70">Upload</div>
+            <h2 className="text-2xl font-semibold mt-1">Gerar materiais automaticamente</h2>
+            <div className="mt-2 text-sm opacity-70">
+              Selecione um arquivo e a IA cria flashcards e resumo no mesmo padrão do app.
+            </div>
           </div>
 
-          <div className="text-xs opacity-70">
-            {status === "uploading" ? "⏳ Processando..." : null}
-            {status === "success" ? "✅ Sucesso" : null}
-            {status === "error" ? "❌ Falhou" : null}
+          <div className="flex flex-wrap gap-2">
+            <Chip tone={status === "success" ? "green" : "neutral"} label={status === "success" ? "✅ Sucesso" : "📄 Pronto"} />
+            <Chip tone={status === "uploading" ? "neutral" : "neutral"} label={isUploading ? "⏳ Processando" : "⚙️ Config"} />
+            <Chip tone={status === "error" ? "red" : "neutral"} label={status === "error" ? "❌ Falhou" : "✨ Stud.ai"} />
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="rounded-xl border border-white/10 bg-black/10 p-3">
+        {/* Config */}
+        <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <Box>
             <div className="text-xs opacity-70">Quantidade de flashcards</div>
             <input
               type="number"
@@ -285,10 +219,10 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
               onChange={(e) => setFlashcardsCount(clampInt(Number(e.target.value), 1, 50))}
               className="mt-2 w-full rounded-lg border border-white/10 bg-black/20 px-3 py-2 outline-none"
             />
-            <div className="mt-1 text-xs opacity-60">1 a 50</div>
-          </div>
+            <div className="text-xs opacity-60 mt-1">1 a 50</div>
+          </Box>
 
-          <div className="rounded-xl border border-white/10 bg-black/10 p-3">
+          <Box>
             <div className="text-xs opacity-70">Dificuldade</div>
             <select
               value={difficulty}
@@ -300,9 +234,9 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
               <option value="hard">Difícil</option>
               <option value="random">Aleatório</option>
             </select>
-          </div>
+          </Box>
 
-          <div className="rounded-xl border border-white/10 bg-black/10 p-3">
+          <Box>
             <div className="text-xs opacity-70">Estilo do resumo</div>
             <select
               value={summaryStyle}
@@ -312,97 +246,96 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
               <option value="bullets">Bullets (objetivo)</option>
               <option value="detailed">Elaborado (explicativo)</option>
             </select>
-          </div>
+          </Box>
         </div>
 
-        {(status === "success" || status === "error" || canNavigate) && lastUsedPreview ? (
+        {/* Status banner */}
+        {message ? (
           <div
-            className={[
-              "mt-4 rounded-xl border p-3 text-sm",
-              canNavigate
+            className={cn(
+              "mt-5 rounded-2xl border p-4 text-sm",
+              status === "success" || canNavigate
                 ? "border-[#00FF8B]/20 bg-[#00FF8B]/10 text-[#00FF8B]"
-                : "border-red-500/20 bg-red-500/10 text-red-200",
-            ].join(" ")}
+                : status === "error"
+                ? "border-red-500/20 bg-red-500/10 text-red-200"
+                : "border-white/10 bg-black/20 text-white/70"
+            )}
           >
-            <div className="font-semibold">{canNavigate ? "Gerado com:" : "Tentou gerar com:"}</div>
-            <div className="opacity-90 mt-1">{lastUsedPreview}</div>
-            {lastProcessedAt ? <div className="text-xs opacity-70 mt-1">às {lastProcessedAt}</div> : null}
-
-            {/* ✅ quota cooldown */}
-            {!canNavigate && cooldownSec > 0 ? (
-              <div className="mt-3 text-sm opacity-90">
-                ⏳ Aguarde <b>{cooldownSec}s</b> para tentar novamente.
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <div className="font-semibold">{message}</div>
+                {lastProcessedAt ? <div className="text-xs opacity-70 mt-1">às {lastProcessedAt}</div> : null}
+                {cooldownSec > 0 ? <div className="mt-2">⏳ Aguarde <b>{cooldownSec}s</b> para tentar novamente.</div> : null}
               </div>
-            ) : null}
 
-            <div className="mt-3 flex flex-col sm:flex-row gap-2">
-              {canNavigate ? (
-                <>
+              <div className="flex flex-wrap gap-2">
+                {canNavigate ? (
+                  <>
+                    <button
+                      onClick={() => onNavigate?.("flashcards")}
+                      className="rounded-xl border border-[#00FF8B]/30 bg-[#00FF8B]/10 px-4 py-2 text-sm font-semibold text-[#00FF8B] hover:bg-[#00FF8B]/15"
+                    >
+                      Ir para Flashcards
+                    </button>
+                    <button
+                      onClick={() => onNavigate?.("summary")}
+                      className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm hover:bg-white/10"
+                    >
+                      Ir para Resumo
+                    </button>
+                  </>
+                ) : (
                   <button
-                    onClick={() => onNavigate?.("flashcards")}
-                    className="rounded-xl border border-[#00FF8B]/30 bg-[#00FF8B]/10 px-4 py-2 text-sm font-semibold text-[#00FF8B] hover:bg-[#00FF8B]/15"
+                    onClick={regenerate}
+                    disabled={!selectedFile || isUploading || cooldownSec > 0}
+                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
                   >
-                    Ir para Flashcards
+                    {cooldownSec > 0 ? `Tentar em ${cooldownSec}s` : "Tentar novamente"}
                   </button>
-
-                  <button
-                    onClick={() => onNavigate?.("summary")}
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm hover:bg-white/10"
-                  >
-                    Ir para Resumo
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={onRegenerate}
-                  disabled={!selectedFile || isUploading || cooldownSec > 0}
-                  className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm disabled:opacity-50 hover:bg-white/10"
-                >
-                  {cooldownSec > 0 ? `Tentar novamente em ${cooldownSec}s` : "Tentar novamente"}
-                </button>
-              )}
+                )}
+              </div>
             </div>
           </div>
         ) : null}
 
-        <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="text-xs opacity-60">
+        {/* File row */}
+        <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="text-xs opacity-70">
             {selectedFile ? (
               <>
                 Arquivo atual: <span className="opacity-90">{selectedFile.name}</span> • {formatBytes(selectedFile.size)}
               </>
             ) : (
-              "Selecione um arquivo para gerar o conteúdo."
+              "Nenhum arquivo selecionado ainda."
             )}
           </div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={onRegenerate}
+              onClick={regenerate}
               disabled={!selectedFile || isUploading || cooldownSec > 0}
-              className="rounded-xl border border-[#00FF8B]/30 bg-[#00FF8B]/10 px-4 py-2 text-sm font-semibold text-[#00FF8B] disabled:opacity-50 hover:bg-[#00FF8B]/15"
+              className="rounded-xl border border-[#00FF8B]/30 bg-[#00FF8B]/10 px-4 py-2 text-sm font-semibold text-[#00FF8B] hover:bg-[#00FF8B]/15 disabled:opacity-50"
             >
-              {cooldownSec > 0 ? `Aguarde ${cooldownSec}s` : "Gerar novamente"}
+              Gerar novamente
             </button>
-
             <button
-              onClick={onPickFile}
+              onClick={pickFile}
               disabled={isUploading}
-              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm disabled:opacity-50 hover:bg-white/10"
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm hover:bg-white/10 disabled:opacity-50"
             >
               Trocar arquivo
             </button>
-
             <button
-              onClick={clearSelection}
+              onClick={clearAll}
               disabled={isUploading}
-              className="rounded-xl border border-white/10 bg-black/20 px-4 py-2 text-sm disabled:opacity-50 hover:bg-black/30"
+              className="rounded-xl border border-white/10 bg-black/20 px-4 py-2 text-sm hover:bg-black/30 disabled:opacity-50"
             >
               Limpar
             </button>
           </div>
         </div>
 
+        {/* Debug opcional */}
         {lastApiJson ? (
           <details className="mt-4 text-xs opacity-80">
             <summary className="cursor-pointer">Ver resposta da API (debug)</summary>
@@ -413,37 +346,37 @@ export default function UploadSection({ onDataProcessed, onNavigate }: Props) {
         ) : null}
       </div>
 
+      {/* Dropzone premium */}
       <div
         onDrop={onDrop}
         onDragOver={onDragOver}
-        className="w-full rounded-2xl border border-dashed border-white/15 bg-white/[0.03] p-10 text-center"
+        className="mt-6 w-full rounded-3xl border border-dashed border-white/15 bg-white/[0.03] p-10 text-center"
       >
         <div className="text-lg font-semibold">Arraste e solte seu arquivo aqui</div>
         <div className="mt-2 text-sm opacity-70">ou clique para selecionar</div>
 
         <button
-          onClick={onPickFile}
+          onClick={pickFile}
           disabled={isUploading}
-          className="mt-6 inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-5 py-2 disabled:opacity-60 hover:bg-white/10"
+          className="mt-6 inline-flex items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-6 py-3 disabled:opacity-60 hover:bg-white/10"
         >
           {isUploading ? "Processando..." : "Selecionar arquivo"}
         </button>
-
-        {message ? (
-          <div
-            className={[
-              "mt-4 text-sm",
-              status === "success" || canNavigate
-                ? "text-[#00FF8B]"
-                : status === "error"
-                ? "text-red-300"
-                : "text-white/70",
-            ].join(" ")}
-          >
-            {message}
-          </div>
-        ) : null}
       </div>
     </section>
   );
+}
+
+function Box({ children }: { children: any }) {
+  return <div className="rounded-xl border border-white/10 bg-black/15 p-3">{children}</div>;
+}
+
+function Chip({ label, tone }: { label: string; tone: "green" | "red" | "neutral" }) {
+  const cls =
+    tone === "green"
+      ? "border-[#00FF8B]/25 bg-[#00FF8B]/10 text-[#00FF8B]"
+      : tone === "red"
+      ? "border-red-500/25 bg-red-500/10 text-red-200"
+      : "border-white/10 bg-black/20 text-white/70";
+  return <span className={cn("text-xs px-3 py-1 rounded-full border", cls)}>{label}</span>;
 }

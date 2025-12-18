@@ -4,7 +4,8 @@ export type StudyProgress = {
   updatedAt?: string;
 };
 
-const PREFIX = "studai:progress:v1:";
+const PREFIX_LEGACY = "studai:progress:v1:";
+const PREFIX_DOC = "studai:progress:v2:doc:";
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -24,26 +25,36 @@ function safeParse<T>(raw: string | null): T | null {
   }
 }
 
-export function makeProgressKey(topic: string, cardsCount: number) {
-  const t = (topic || "").trim().toLowerCase().slice(0, 80);
-  return `${t}::${cardsCount}`;
+function slugify(input: string) {
+  return (input || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")
+    .slice(0, 60);
+}
+
+// legado (não quebra imports antigos)
+export function makeProgressKey(topic: string, count: number) {
+  const t = slugify(topic || "deck");
+  const c = Number.isFinite(count) ? Math.trunc(count) : 0;
+  return `${PREFIX_LEGACY}${t}:${c}`;
+}
+
+// novo (por doc)
+export function makeProgressKeyForDoc(docId: string) {
+  return `${PREFIX_DOC}${docId}`;
 }
 
 export function loadProgress(key: string): StudyProgress | null {
   if (typeof window === "undefined") return null;
-  return safeParse<StudyProgress>(localStorage.getItem(PREFIX + key));
+  return safeParse<StudyProgress>(localStorage.getItem(key));
 }
 
 export function saveProgress(key: string, progress: StudyProgress) {
   if (typeof window === "undefined") return;
-
-  const payload: StudyProgress = {
-    knownIds: Array.isArray(progress.knownIds) ? progress.knownIds : [],
-    reviewIds: Array.isArray(progress.reviewIds) ? progress.reviewIds : [],
-    updatedAt: new Date().toISOString(),
-  };
-
-  localStorage.setItem(PREFIX + key, JSON.stringify(payload));
+  localStorage.setItem(key, JSON.stringify(progress));
   emit();
 }
 
@@ -51,18 +62,18 @@ export function clearProgress(key?: string) {
   if (typeof window === "undefined") return;
 
   if (key) {
-    localStorage.removeItem(PREFIX + key);
+    localStorage.removeItem(key);
     emit();
     return;
   }
 
-  // remove tudo que começa com PREFIX
-  const keysToRemove: string[] = [];
+  const keys: string[] = [];
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
-    if (k && k.startsWith(PREFIX)) keysToRemove.push(k);
+    if (!k) continue;
+    if (k.startsWith(PREFIX_LEGACY) || k.startsWith(PREFIX_DOC)) keys.push(k);
   }
-  for (const k of keysToRemove) localStorage.removeItem(k);
+  keys.forEach((k) => localStorage.removeItem(k));
   emit();
 }
 
