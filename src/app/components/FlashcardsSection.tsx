@@ -1,594 +1,395 @@
 "use client";
 
-import { useEffect, useMemo, useState, useCallback } from "react";
-import {
-  Flashcard,
-  loadMaterial,
-  onMaterialUpdated,
-} from "@/lib/studyMaterialStore";
+import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   loadProgress,
   saveProgress,
   makeProgressKey,
-  makeProgressKeyForDoc,
-  clearProgress,
+  onProgressUpdated,
 } from "@/lib/studyProgressStore";
-import {
-  startSession,
-  recordSessionAction,
-  endSession,
-} from "@/lib/studySessionStore";
-import {
-  Check,
-  X,
-  ChevronLeft,
-  ChevronRight,
-  Play,
-  StopCircle,
-  RotateCcw,
-  SlidersHorizontal,
-} from "lucide-react";
 
-type Filter = "all" | "review" | "known";
-type Mode = "deck" | "session";
+type Props = {
+  data?: any | null;
+};
+
+type Material = {
+  materialId?: string;
+  topic?: string;
+  flashcards?: Array<{ id: number; question: string; answer: string }>;
+  summary?: any;
+};
 
 function cn(...s: Array<string | false | null | undefined>) {
   return s.filter(Boolean).join(" ");
 }
-function pct(n: number) {
-  return Math.max(0, Math.min(100, Math.round(n)));
+
+async function fetchLatestMaterial(): Promise<Material | null> {
+  const res = await fetch("/api/materials/latest", { method: "GET" });
+  const json = await res.json();
+
+  if (!res.ok || !json?.success) return null;
+  const latest = json?.data;
+  if (!latest) return null;
+
+  // latest.data é o Json com topic/flashcards/summary
+  const payload = latest?.data && typeof latest.data === "object" ? latest.data : null;
+  if (!payload) return null;
+
+  const material: Material = {
+    ...payload,
+    materialId: latest.id,
+    topic: payload.topic || latest.topic || "Material",
+  };
+
+  // salva espelho no localStorage (ajuda quando navegar)
+  try {
+    localStorage.setItem("studai:lastMaterialData:v1", JSON.stringify(material));
+  } catch {}
+
+  return material;
 }
-function shuffle<T>(arr: T[]) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+
+async function fetchMeId(): Promise<string | null> {
+  try {
+    const res = await fetch("/api/auth/me");
+    const json = await res.json();
+    if (!res.ok || !json?.success) return null;
+    return json?.data?.id || null;
+  } catch {
+    return null;
   }
-  return a;
 }
 
-export default function FlashcardsSection(_props: { data?: any }) {
-  const [topic, setTopic] = useState("");
-  const [cards, setCards] = useState<Flashcard[]>([]);
-  const [docId, setDocId] = useState<string>("");
+export default function FlashcardsSection({ data }: Props) {
+  const [material, setMaterial] = useState<Material | null>(data || null);
+  const [loading, setLoading] = useState<boolean>(!data);
+  const [error, setError] = useState<string | null>(null);
 
-  const [filter, setFilter] = useState<Filter>("all");
-  const [mode, setMode] = useState<Mode>("deck");
+  const [userId, setUserId] = useState<string | null>(null);
 
-  const [isFlipped, setIsFlipped] = useState(false);
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState<number>(0);
+  const [flipped, setFlipped] = useState<boolean>(false);
+  const [knownIds, setKnownIds] = useState<Set<number>>(new Set());
+  const [reviewIds, setReviewIds] = useState<Set<number>>(new Set());
 
-  const [knownIds, setKnownIds] = useState<number[]>([]);
-  const [reviewIds, setReviewIds] = useState<number[]>([]);
-
-  const [sessionSize, setSessionSize] = useState<number>(10);
-  const [sessionActive, setSessionActive] = useState(false);
-  const [sessionQueue, setSessionQueue] = useState<Flashcard[]>([]);
-  const [sessionIndex, setSessionIndex] = useState(0);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-
-  // ---------- Progress keys (doc + legacy) ----------
-  const legacyKey = useMemo(() => makeProgressKey(topic || "deck", cards.length || 0), [topic, cards.length]);
-  const docKey = useMemo(() => (docId ? makeProgressKeyForDoc(docId) : ""), [docId]);
-
-  // ---------- Load material + progress ----------
+  // 1) pega userId (pra chave do progresso)
   useEffect(() => {
-    const refresh = () => {
-      const m = loadMaterial();
-      setTopic(m?.topic ?? "");
-      setCards(m?.flashcards ?? []);
-      setDocId(m?.docId ?? "");
-
-      // carrega progresso: primeiro por docId, depois fallback legacy
-      const pDoc = m?.docId ? loadProgress(makeProgressKeyForDoc(m.docId)) : null;
-      const pLegacy = loadProgress(makeProgressKey(m?.topic ?? "deck", m?.flashcards?.length ?? 0));
-
-      const p = pDoc ?? pLegacy;
-
-      setKnownIds(p?.knownIds ?? []);
-      setReviewIds(p?.reviewIds ?? []);
-
-      setFilter("all");
-      setMode("deck");
-      setIndex(0);
-      setIsFlipped(false);
-
-      setSessionActive(false);
-      setSessionQueue([]);
-      setSessionIndex(0);
-      setSessionId(null);
-    };
-
-    refresh();
-    return onMaterialUpdated(refresh);
+    fetchMeId().then(setUserId);
   }, []);
 
-  const knownSet = useMemo(() => new Set(knownIds), [knownIds]);
-  const reviewSet = useMemo(() => new Set(reviewIds), [reviewIds]);
-
-  // ---------- Filtered deck (deck mode) ----------
-  const filteredCards = useMemo(() => {
-    if (filter === "known") return cards.filter((c) => knownSet.has(c.id));
-    if (filter === "review") return cards.filter((c) => reviewSet.has(c.id));
-    return cards;
-  }, [cards, filter, knownSet, reviewSet]);
-
-  // ---------- Active list (deck or session) ----------
-  const activeList = sessionActive ? sessionQueue : filteredCards;
-  const activeIndex = sessionActive ? sessionIndex : index;
-  const current = activeList[activeIndex] ?? null;
-
-  // ---------- Overall progress ----------
-  const doneCount = useMemo(() => {
-    const s = new Set<number>([...knownIds, ...reviewIds]);
-    return s.size;
-  }, [knownIds, reviewIds]);
-
-  const progressPct = useMemo(() => {
-    const total = cards.length || 0;
-    return total ? pct((doneCount / total) * 100) : 0;
-  }, [doneCount, cards.length]);
-
-  const accuracyPct = useMemo(() => {
-    const k = knownIds.length;
-    const r = reviewIds.length;
-    return (k + r) ? pct((k / (k + r)) * 100) : 0;
-  }, [knownIds.length, reviewIds.length]);
-
-  // ---------- Save progress (doc + legacy) ----------
-  const persistProgress = useCallback(
-    (nextKnown: number[], nextReview: number[]) => {
-      const payload = {
-        knownIds: nextKnown,
-        reviewIds: nextReview,
-        updatedAt: new Date().toISOString(),
-      };
-
-      // salva por docId (novo)
-      if (docKey) saveProgress(docKey, payload);
-
-      // salva também no legacy para compatibilidade com telas antigas
-      if (legacyKey) saveProgress(legacyKey, payload);
-    },
-    [docKey, legacyKey]
-  );
-
-  // ---------- Helpers ----------
-  function safeSetDeckIndex(next: number) {
-    const total = filteredCards.length;
-    if (!total) return setIndex(0);
-    const clamped = Math.max(0, Math.min(total - 1, next));
-    setIndex(clamped);
-  }
-
-  function safeSetSessionIndex(next: number) {
-    const total = sessionQueue.length;
-    if (!total) return setSessionIndex(0);
-    const clamped = Math.max(0, Math.min(total - 1, next));
-    setSessionIndex(clamped);
-  }
-
-  function goNext() {
-    setIsFlipped(false);
-    if (sessionActive) safeSetSessionIndex(sessionIndex + 1);
-    else safeSetDeckIndex(index + 1);
-  }
-
-  function goPrev() {
-    setIsFlipped(false);
-    if (sessionActive) safeSetSessionIndex(sessionIndex - 1);
-    else safeSetDeckIndex(index - 1);
-  }
-
-  // ---------- Session build ----------
-  function buildSessionDeck(size: number) {
-    const total = cards.length;
-    const want = Math.max(1, Math.min(total || 1, Math.trunc(size || 10)));
-
-    // prioridade: não respondidos -> review -> resto
-    const notDone = cards.filter((c) => !knownSet.has(c.id) && !reviewSet.has(c.id));
-    const review = cards.filter((c) => reviewSet.has(c.id));
-    const rest = cards.filter((c) => knownSet.has(c.id));
-
-    const pool = [...shuffle(notDone), ...shuffle(review), ...shuffle(rest)];
-    return pool.slice(0, want);
-  }
-
-  function startNewSession() {
-    if (!cards.length || !docId) return;
-
-    const deck = buildSessionDeck(sessionSize);
-    setMode("session");
-    setSessionQueue(deck);
-    setSessionIndex(0);
-    setIsFlipped(false);
-    setSessionActive(true);
-
-    const sid = startSession({
-      docId,
-      mode: "session",
-      sessionSize: deck.length,
-    });
-    setSessionId(sid);
-  }
-
-  function stopSession() {
-    if (sessionId) endSession(sessionId);
-    setSessionActive(false);
-    setSessionQueue([]);
-    setSessionIndex(0);
-    setSessionId(null);
-    setIsFlipped(false);
-    setMode("deck");
-  }
-
-  // ---------- Mark actions ----------
-  const markKnown = useCallback(() => {
-    if (!current) return;
-
-    const nextKnownSet = new Set(knownIds);
-    const nextReviewSet = new Set(reviewIds);
-
-    nextKnownSet.add(current.id);
-    nextReviewSet.delete(current.id);
-
-    const nextKnown = Array.from(nextKnownSet);
-    const nextReview = Array.from(nextReviewSet);
-
-    setKnownIds(nextKnown);
-    setReviewIds(nextReview);
-    persistProgress(nextKnown, nextReview);
-
-    if (sessionActive && sessionId) recordSessionAction(sessionId, "known");
-
-    // fim de sessão?
-    if (sessionActive && sessionQueue.length && sessionIndex >= sessionQueue.length - 1) {
-      if (sessionId) endSession(sessionId);
-      stopSession();
-      return;
-    }
-
-    goNext();
-  }, [
-    current,
-    knownIds,
-    reviewIds,
-    persistProgress,
-    sessionActive,
-    sessionId,
-    sessionQueue.length,
-    sessionIndex,
-  ]);
-
-  const markReview = useCallback(() => {
-    if (!current) return;
-
-    const nextKnownSet = new Set(knownIds);
-    const nextReviewSet = new Set(reviewIds);
-
-    nextReviewSet.add(current.id);
-    nextKnownSet.delete(current.id);
-
-    const nextKnown = Array.from(nextKnownSet);
-    const nextReview = Array.from(nextReviewSet);
-
-    setKnownIds(nextKnown);
-    setReviewIds(nextReview);
-    persistProgress(nextKnown, nextReview);
-
-    if (sessionActive && sessionId) recordSessionAction(sessionId, "review");
-
-    if (sessionActive && sessionQueue.length && sessionIndex >= sessionQueue.length - 1) {
-      if (sessionId) endSession(sessionId);
-      stopSession();
-      return;
-    }
-
-    goNext();
-  }, [
-    current,
-    knownIds,
-    reviewIds,
-    persistProgress,
-    sessionActive,
-    sessionId,
-    sessionQueue.length,
-    sessionIndex,
-  ]);
-
-  // ---------- Keyboard shortcuts ----------
+  // 2) se não veio data por prop, busca do DB
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (!current) return;
+    let alive = true;
 
-      if (e.key === " " || e.key.toLowerCase() === "enter") {
-        e.preventDefault();
-        setIsFlipped((v) => !v);
+    async function load() {
+      if (data) {
+        setMaterial(data);
+        setLoading(false);
+        return;
       }
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        markReview();
+
+      setLoading(true);
+      const latest = await fetchLatestMaterial();
+      if (!alive) return;
+
+      if (!latest) {
+        setError("Nenhum material encontrado. Faça um upload primeiro.");
+        setMaterial(null);
+      } else {
+        setError(null);
+        setMaterial(latest);
       }
-      if (e.key === "ArrowRight") {
-        e.preventDefault();
-        markKnown();
-      }
+
+      setLoading(false);
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [current, markKnown, markReview]);
 
-  // ---------- Empty state ----------
-  if (!cards.length) {
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [data]);
+
+  const cards = useMemo(() => {
+    const list = material?.flashcards || [];
+    return Array.isArray(list) ? list : [];
+  }, [material]);
+
+  const materialId = material?.materialId || "latest";
+  const progressKey = useMemo(() => {
+    // se não tiver userId ainda, usa "me" pra não quebrar
+    return makeProgressKey(userId || "me", materialId);
+  }, [userId, materialId]);
+
+  // 3) carrega progresso quando tiver cards
+  useEffect(() => {
+    if (!cards.length) return;
+
+    const p = loadProgress(progressKey);
+    if (p) {
+      setIndex(Math.min(p.currentIndex || 0, Math.max(0, cards.length - 1)));
+      setKnownIds(new Set(p.knownIds || []));
+      setReviewIds(new Set(p.reviewIds || []));
+    } else {
+      setIndex(0);
+      setKnownIds(new Set());
+      setReviewIds(new Set());
+    }
+
+    // escuta atualizações do progresso
+    const unsub = onProgressUpdated((key) => {
+      if (key !== progressKey) return;
+      const next = loadProgress(progressKey);
+      if (!next) return;
+
+      setIndex(Math.min(next.currentIndex || 0, Math.max(0, cards.length - 1)));
+      setKnownIds(new Set(next.knownIds || []));
+      setReviewIds(new Set(next.reviewIds || []));
+    });
+
+    return () => unsub();
+  }, [cards.length, progressKey]);
+
+  function persist(nextIndex: number, nextKnown: Set<number>, nextReview: Set<number>) {
+    saveProgress(progressKey, {
+      currentIndex: nextIndex,
+      knownIds: Array.from(nextKnown),
+      reviewIds: Array.from(nextReview),
+      updatedAt: Date.now(),
+    });
+  }
+
+  function prev() {
+    const next = Math.max(0, index - 1);
+    setIndex(next);
+    setFlipped(false);
+    persist(next, knownIds, reviewIds);
+  }
+
+  function next() {
+    const next = Math.min(cards.length - 1, index + 1);
+    setIndex(next);
+    setFlipped(false);
+    persist(next, knownIds, reviewIds);
+  }
+
+  function markKnown() {
+    const id = cards[index]?.id;
+    if (!id) return;
+
+    const k = new Set(knownIds);
+    const r = new Set(reviewIds);
+    k.add(id);
+    r.delete(id);
+
+    setKnownIds(k);
+    setReviewIds(r);
+
+    const nextIndex = Math.min(cards.length - 1, index + 1);
+    setIndex(nextIndex);
+    setFlipped(false);
+
+    persist(nextIndex, k, r);
+  }
+
+  function markReview() {
+    const id = cards[index]?.id;
+    if (!id) return;
+
+    const k = new Set(knownIds);
+    const r = new Set(reviewIds);
+    r.add(id);
+    k.delete(id);
+
+    setKnownIds(k);
+    setReviewIds(r);
+
+    const nextIndex = Math.min(cards.length - 1, index + 1);
+    setIndex(nextIndex);
+    setFlipped(false);
+
+    persist(nextIndex, k, r);
+  }
+
+  const total = cards.length;
+  const done = knownIds.size + reviewIds.size;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+  if (loading) {
     return (
-      <section className="w-full max-w-5xl mx-auto mt-10 rounded-2xl border border-white/10 bg-white/5 p-8 text-center">
-        <h2 className="text-2xl font-semibold">Flashcards</h2>
-        <p className="mt-2 opacity-70">Faça um upload para gerar flashcards automaticamente.</p>
+      <section className="w-full">
+        <div className="rounded-2xl border border-[#1A1A1A] bg-[#0D0D0D] p-6 text-gray-300">
+          Carregando flashcards...
+        </div>
       </section>
     );
   }
 
-  // ---------- If filter results empty ----------
-  const hasActive = !!current;
+  if (error) {
+    return (
+      <section className="w-full">
+        <div className="rounded-2xl border border-[#1A1A1A] bg-[#0D0D0D] p-6 text-red-300">
+          {error}
+        </div>
+      </section>
+    );
+  }
+
+  if (!total) {
+    return (
+      <section className="w-full">
+        <div className="rounded-2xl border border-[#1A1A1A] bg-[#0D0D0D] p-6 text-gray-300">
+          Nenhum flashcard encontrado neste material.
+        </div>
+      </section>
+    );
+  }
+
+  const card = cards[index];
 
   return (
-    <section className="w-full max-w-5xl mx-auto mt-10">
-      {/* Header premium */}
-      <div className="rounded-2xl border border-white/10 bg-white/5 p-6">
-        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+    <section className="w-full">
+      <div className="mb-5 flex flex-col gap-3">
+        <div className="flex items-end justify-between gap-3">
           <div>
-            <div className="text-xs opacity-70">Flashcards</div>
-            <h2 className="text-2xl font-semibold mt-1">{topic || "Seu deck"}</h2>
-            <div className="mt-2 text-sm opacity-70">
-              Atalhos: <b>Enter/Espaço</b> vira • <b>←</b> revisar • <b>→</b> acertei
+            <div className="text-2xl font-bold text-white">FlashCards</div>
+            <div className="text-sm text-gray-400">
+              {material?.topic || "Material"} • {done}/{total} estudados
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Chip tone="neutral" label={`📚 Cards: ${cards.length}`} />
-            <Chip tone="neutral" label={`✅ Feitos: ${doneCount}`} />
-            <Chip tone="green" label={`🎯 Aproveitamento: ${accuracyPct}%`} />
-          </div>
+          <div className="text-sm text-gray-400">{pct}%</div>
         </div>
 
-        {/* Progress bar */}
-        <div className="mt-5">
-          <div className="flex items-center justify-between text-xs opacity-70">
-            <span>Progresso geral</span>
-            <span>{progressPct}%</span>
-          </div>
-          <div className="mt-2 h-2 w-full rounded-full bg-black/30 overflow-hidden border border-white/10">
-            <div className="h-full rounded-full bg-[#00FF8B]/70" style={{ width: `${progressPct}%` }} />
-          </div>
+        {/* Barra de progresso */}
+        <div className="h-2 w-full rounded-full bg-[#1A1A1A] overflow-hidden">
+          <div
+            className="h-full bg-[#00FF8B]"
+            style={{ width: `${pct}%` }}
+          />
         </div>
 
-        {/* Controls row */}
-        <div className="mt-5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          {/* Filters */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex items-center gap-2 text-xs opacity-70 mr-2">
-              <SlidersHorizontal className="w-4 h-4" />
-              Filtro:
-            </div>
-            <Pill active={filter === "all"} onClick={() => { setFilter("all"); setIsFlipped(false); setIndex(0); }}>
-              Todos
-            </Pill>
-            <Pill active={filter === "review"} onClick={() => { setFilter("review"); setIsFlipped(false); setIndex(0); }}>
-              Revisar
-            </Pill>
-            <Pill active={filter === "known"} onClick={() => { setFilter("known"); setIsFlipped(false); setIndex(0); }}>
-              Conhecidos
-            </Pill>
+        {/* Contadores */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-[#1A1A1A] bg-[#0D0D0D] p-4">
+            <div className="text-xs text-gray-400">Conhecidos</div>
+            <div className="text-2xl font-semibold text-white">{knownIds.size}</div>
           </div>
-
-          {/* Session controls */}
-          <div className="flex flex-wrap items-center gap-2">
-            {!sessionActive ? (
-              <>
-                <div className="text-xs opacity-70 mr-1">Sessão:</div>
-                <input
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={sessionSize}
-                  onChange={(e) => setSessionSize(Math.max(1, Math.min(50, Math.trunc(Number(e.target.value) || 10))))}
-                  className="w-24 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm outline-none"
-                />
-                <button
-                  onClick={startNewSession}
-                  className="rounded-2xl border border-[#00FF8B]/30 bg-[#00FF8B]/10 px-4 py-2 text-sm font-semibold text-[#00FF8B] hover:bg-[#00FF8B]/15 inline-flex items-center gap-2"
-                >
-                  <Play className="w-4 h-4" /> Iniciar
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={stopSession}
-                className="rounded-2xl border border-white/10 bg-black/20 px-4 py-2 text-sm hover:bg-black/30 inline-flex items-center gap-2"
-              >
-                <StopCircle className="w-4 h-4" /> Encerrar sessão
-              </button>
-            )}
-
-            <button
-              onClick={() => {
-                // reset só do deck ativo
-                if (docKey) clearProgress(docKey);
-                if (legacyKey) clearProgress(legacyKey);
-                setKnownIds([]);
-                setReviewIds([]);
-                setIsFlipped(false);
-              }}
-              className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm hover:bg-white/10 inline-flex items-center gap-2"
-            >
-              <RotateCcw className="w-4 h-4" /> Reset progresso
-            </button>
+          <div className="rounded-2xl border border-[#1A1A1A] bg-[#0D0D0D] p-4">
+            <div className="text-xs text-gray-400">Para revisar</div>
+            <div className="text-2xl font-semibold text-white">{reviewIds.size}</div>
           </div>
         </div>
       </div>
 
-      {/* If filtered list empty */}
-      {!hasActive ? (
-        <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-10 text-center">
-          <div className="text-xl font-semibold">Nada aqui ainda</div>
-          <div className="mt-2 opacity-70">
-            Esse filtro não tem cards. Tente “Todos” ou faça uma sessão.
-          </div>
+      {/* Card (flip) */}
+      <div className="rounded-2xl border border-[#1A1A1A] bg-[#0D0D0D] p-5">
+        <div className="mb-4 flex items-center justify-between text-sm text-gray-400">
+          <span>
+            Pergunta {index + 1}/{total}
+          </span>
           <button
-            onClick={() => setFilter("all")}
-            className="mt-6 rounded-2xl border border-[#00FF8B]/30 bg-[#00FF8B]/10 px-6 py-3 font-semibold text-[#00FF8B] hover:bg-[#00FF8B]/15"
+            onClick={() => setFlipped((v) => !v)}
+            className="rounded-lg border border-[#1A1A1A] px-3 py-1 hover:bg-[#1A1A1A]"
           >
-            Voltar para Todos
+            {flipped ? "Ver pergunta" : "Ver resposta"}
           </button>
         </div>
-      ) : (
-        <>
-          {/* Card index line */}
-          <div className="mt-6 flex items-center justify-between text-sm opacity-80">
-            <div>
-              {sessionActive ? (
-                <span>
-                  Sessão • Card <b>{sessionIndex + 1}</b>/<b>{sessionQueue.length}</b>
-                </span>
-              ) : (
-                <span>
-                  Deck • Card <b>{index + 1}</b>/<b>{filteredCards.length}</b>
-                </span>
+
+        <div
+          className="relative w-full"
+          style={{ perspective: 1200 }}
+        >
+          <button
+            type="button"
+            onClick={() => setFlipped((v) => !v)}
+            className="w-full text-left"
+            aria-label="Virar flashcard"
+          >
+            <div
+              className={cn(
+                "relative w-full rounded-2xl border border-[#00FF8B]/25 bg-[#0D0D0D] p-6 transition-transform duration-500",
+                "shadow-[0_0_0_1px_rgba(0,255,139,0.08)]",
               )}
-            </div>
-
-            <div className="flex items-center gap-2 text-xs opacity-70">
-              <span className="inline-flex items-center gap-1">
-                ✅ {knownIds.length}
-              </span>
-              <span className="inline-flex items-center gap-1">
-                ❌ {reviewIds.length}
-              </span>
-            </div>
-          </div>
-
-          {/* Flip card */}
-          <div className="mt-3 rounded-3xl border border-white/10 bg-white/5 p-5">
-            <div className="relative [perspective:1200px]">
+              style={{
+                transformStyle: "preserve-3d",
+                transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
+                minHeight: 220,
+              }}
+            >
+              {/* Frente */}
               <div
-                className={cn(
-                  "relative w-full min-h-[260px] transition-transform duration-500 [transform-style:preserve-3d]",
-                  isFlipped ? "[transform:rotateY(180deg)]" : ""
-                )}
+                className="absolute inset-0 p-6"
+                style={{ backfaceVisibility: "hidden" }}
               >
-                {/* FRONT */}
-                <button
-                  type="button"
-                  onClick={() => setIsFlipped(true)}
-                  className="absolute inset-0 rounded-2xl border border-white/10 bg-black/20 p-6 text-left [backface-visibility:hidden] hover:bg-black/25"
-                >
-                  <div className="text-xs opacity-70">Pergunta</div>
-                  <div className="mt-2 text-xl font-semibold leading-relaxed">
-                    {current!.question}
-                  </div>
+                <div className="text-xs text-[#00FF8B] font-semibold">PERGUNTA</div>
+                <div className="mt-3 text-lg sm:text-xl font-semibold text-white">
+                  {card?.question}
+                </div>
+                <div className="mt-6 text-sm text-gray-400">
+                  Clique no card para virar.
+                </div>
+              </div>
 
-                  <div className="mt-6 text-sm opacity-70">
-                    Clique para ver a resposta
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {knownSet.has(current!.id) ? <Chip tone="green" label="✅ Conhecido" /> : null}
-                    {reviewSet.has(current!.id) ? <Chip tone="red" label="❌ Revisar" /> : null}
-                    {current!.difficulty ? <Chip tone="neutral" label={`⚡ ${current!.difficulty}`} /> : null}
-                  </div>
-                </button>
-
-                {/* BACK */}
-                <button
-                  type="button"
-                  onClick={() => setIsFlipped(false)}
-                  className="absolute inset-0 rounded-2xl border border-white/10 bg-black/20 p-6 text-left [transform:rotateY(180deg)] [backface-visibility:hidden] hover:bg-black/25"
-                >
-                  <div className="text-xs opacity-70">Resposta</div>
-                  <div className="mt-2 text-lg leading-relaxed whitespace-pre-wrap opacity-95">
-                    {current!.answer}
-                  </div>
-
-                  <div className="mt-6 text-sm opacity-70">
-                    Clique para voltar à pergunta
-                  </div>
-                </button>
+              {/* Verso */}
+              <div
+                className="absolute inset-0 p-6"
+                style={{
+                  backfaceVisibility: "hidden",
+                  transform: "rotateY(180deg)",
+                }}
+              >
+                <div className="text-xs text-[#00FF8B] font-semibold">RESPOSTA</div>
+                <div className="mt-3 text-base sm:text-lg text-gray-100 whitespace-pre-wrap">
+                  {card?.answer}
+                </div>
+                <div className="mt-6 text-sm text-gray-400">
+                  Clique no card para voltar.
+                </div>
               </div>
             </div>
+          </button>
+        </div>
 
-            {/* Actions */}
-            <div className="mt-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={goPrev}
-                  disabled={activeIndex <= 0}
-                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm hover:bg-white/10 disabled:opacity-40 inline-flex items-center gap-2"
-                >
-                  <ChevronLeft className="w-4 h-4" /> Anterior
-                </button>
+        {/* Ações */}
+        <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <button
+            onClick={prev}
+            disabled={index === 0}
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl border border-[#1A1A1A] px-4 py-2 text-sm text-gray-300 disabled:opacity-40 hover:bg-[#1A1A1A]"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Anterior
+          </button>
 
-                <button
-                  onClick={goNext}
-                  disabled={activeIndex >= activeList.length - 1}
-                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm hover:bg-white/10 disabled:opacity-40 inline-flex items-center gap-2"
-                >
-                  Próximo <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+          <div className="flex w-full sm:w-auto gap-2">
+            <button
+              onClick={markReview}
+              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 rounded-xl bg-red-600/15 border border-red-500/30 px-4 py-2 text-sm font-semibold text-red-200 hover:bg-red-600/20"
+            >
+              <XCircle className="w-4 h-4" />
+              Não sei
+            </button>
 
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={markReview}
-                  className="rounded-2xl border border-red-500/25 bg-red-500/10 px-5 py-3 text-sm font-semibold text-red-200 hover:bg-red-500/15 inline-flex items-center gap-2"
-                >
-                  <X className="w-4 h-4" /> Revisar
-                </button>
-
-                <button
-                  onClick={markKnown}
-                  className="rounded-2xl border border-[#00FF8B]/30 bg-[#00FF8B]/10 px-5 py-3 text-sm font-semibold text-[#00FF8B] hover:bg-[#00FF8B]/15 inline-flex items-center gap-2"
-                >
-                  <Check className="w-4 h-4" /> Acertei
-                </button>
-              </div>
-            </div>
+            <button
+              onClick={markKnown}
+              className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 rounded-xl bg-[#00FF8B] px-4 py-2 text-sm font-semibold text-[#0D0D0D] hover:opacity-90"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              Sei
+            </button>
           </div>
-        </>
-      )}
+
+          <button
+            onClick={next}
+            disabled={index >= total - 1}
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl border border-[#1A1A1A] px-4 py-2 text-sm text-gray-300 disabled:opacity-40 hover:bg-[#1A1A1A]"
+          >
+            Próximo
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
     </section>
   );
-}
-
-function Pill({
-  active,
-  onClick,
-  children,
-}: {
-  active?: boolean;
-  onClick?: () => void;
-  children: any;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "rounded-full px-4 py-2 text-sm border transition",
-        active
-          ? "border-[#00FF8B]/30 bg-[#00FF8B]/10 text-[#00FF8B]"
-          : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10"
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Chip({ label, tone }: { label: string; tone: "green" | "red" | "neutral" }) {
-  const cls =
-    tone === "green"
-      ? "border-[#00FF8B]/25 bg-[#00FF8B]/10 text-[#00FF8B]"
-      : tone === "red"
-      ? "border-red-500/25 bg-red-500/10 text-red-200"
-      : "border-white/10 bg-black/20 text-white/70";
-  return <span className={cn("text-xs px-3 py-1 rounded-full border", cls)}>{label}</span>;
 }

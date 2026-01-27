@@ -1,83 +1,100 @@
-export type StudyProgress = {
-  knownIds: number[];
-  reviewIds: number[];
-  updatedAt?: string;
+"use client";
+
+/**
+ * Store simples de progresso (localStorage) + "events" para atualizar UI.
+ * Compatível com:
+ * - makeProgressKey
+ * - makeProgressKeyForDoc
+ * - loadProgress
+ * - saveProgress
+ * - clearProgress
+ * - onProgressUpdated
+ */
+
+type ProgressItem = {
+  knownIds: number[];   // ids marcados como "sei"
+  reviewIds: number[];  // ids marcados como "não sei"
+  currentIndex: number; // índice atual no deck
+  updatedAt: number;    // timestamp
 };
 
-const PREFIX_LEGACY = "studai:progress:v1:";
-const PREFIX_DOC = "studai:progress:v2:doc:";
-const listeners = new Set<() => void>();
+const LS_PREFIX = "studai:progress:v1:";
 
-function emit() {
-  for (const fn of listeners) {
-    try {
-      fn();
-    } catch {}
-  }
-}
-
-function safeParse<T>(raw: string | null): T | null {
-  if (!raw) return null;
+function safeParse<T>(s: string | null): T | null {
+  if (!s) return null;
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(s) as T;
   } catch {
     return null;
   }
 }
 
-function slugify(input: string) {
-  return (input || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "")
-    .slice(0, 60);
+function emit(key: string) {
+  // evento custom local + evento nativo storage
+  window.dispatchEvent(new CustomEvent("studai:progress-updated", { detail: { key } }));
 }
 
-// legado (não quebra imports antigos)
-export function makeProgressKey(topic: string, count: number) {
-  const t = slugify(topic || "deck");
-  const c = Number.isFinite(count) ? Math.trunc(count) : 0;
-  return `${PREFIX_LEGACY}${t}:${c}`;
+export function makeProgressKey(userId: string, materialId: string) {
+  return `${LS_PREFIX}${userId}:${materialId}`;
 }
 
-// novo (por doc)
-export function makeProgressKeyForDoc(docId: string) {
-  return `${PREFIX_DOC}${docId}`;
+/**
+ * Caso seu app trate material como "docId" (ou slug/uuid),
+ * esse helper mantém compatibilidade com imports antigos.
+ */
+export function makeProgressKeyForDoc(userId: string, docId: string) {
+  return `${LS_PREFIX}${userId}:doc:${docId}`;
 }
 
-export function loadProgress(key: string): StudyProgress | null {
+export function loadProgress(key: string): ProgressItem | null {
   if (typeof window === "undefined") return null;
-  return safeParse<StudyProgress>(localStorage.getItem(key));
+  return safeParse<ProgressItem>(localStorage.getItem(key));
 }
 
-export function saveProgress(key: string, progress: StudyProgress) {
+export function saveProgress(key: string, progress: ProgressItem) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(key, JSON.stringify(progress));
-  emit();
+  localStorage.setItem(
+    key,
+    JSON.stringify({
+      knownIds: Array.from(new Set(progress.knownIds || [])),
+      reviewIds: Array.from(new Set(progress.reviewIds || [])),
+      currentIndex: Number.isFinite(progress.currentIndex) ? progress.currentIndex : 0,
+      updatedAt: Date.now(),
+    } satisfies ProgressItem)
+  );
+  emit(key);
 }
 
-export function clearProgress(key?: string) {
+export function clearProgress(key: string) {
   if (typeof window === "undefined") return;
-
-  if (key) {
-    localStorage.removeItem(key);
-    emit();
-    return;
-  }
-
-  const keys: string[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (!k) continue;
-    if (k.startsWith(PREFIX_LEGACY) || k.startsWith(PREFIX_DOC)) keys.push(k);
-  }
-  keys.forEach((k) => localStorage.removeItem(k));
-  emit();
+  localStorage.removeItem(key);
+  emit(key);
 }
 
-export function onProgressUpdated(cb: () => void) {
-  listeners.add(cb);
-  return () => listeners.delete(cb);
+/**
+ * Listener para componentes reagirem a mudanças de progresso.
+ * Retorna um "unsubscribe".
+ */
+export function onProgressUpdated(cb: (key: string) => void) {
+  if (typeof window === "undefined") return () => {};
+
+  const handler = (ev: Event) => {
+    const anyEv = ev as any;
+    const key = anyEv?.detail?.key;
+    if (typeof key === "string") cb(key);
+  };
+
+  window.addEventListener("studai:progress-updated", handler as any);
+
+  // também escuta mudanças do localStorage (outra aba)
+  const storageHandler = (ev: StorageEvent) => {
+    if (!ev.key) return;
+    if (ev.key.startsWith(LS_PREFIX)) cb(ev.key);
+  };
+  window.addEventListener("storage", storageHandler);
+
+  return () => {
+    window.removeEventListener("studai:progress-updated", handler as any);
+    window.removeEventListener("storage", storageHandler);
+  };
 }

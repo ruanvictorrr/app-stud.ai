@@ -1,365 +1,740 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
+import {
+  GoogleGenAI,
+  createPartFromUri,
+  createUserContent,
+} from "@google/genai";
+import { prisma } from "@/lib/prisma";
+import { requireUser } from "@/lib/auth";
+import crypto from "crypto";
+import os from "os";
+import path from "path";
+import { writeFile, unlink } from "fs/promises";
+import * as pdfParse from "pdf-parse";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-type Difficulty = "easy" | "medium" | "hard" | "random";
-type SummaryStyle = "bullets" | "detailed";
+type Provider = "openai" | "gemini";
+type SummaryStyle = "bullet" | "explained";
+type CardDifficulty = "easy" | "medium" | "hard";
 
-function clampInt(n: number, min: number, max: number) {
-  if (!Number.isFinite(n)) return min;
-  return Math.max(min, Math.min(max, Math.trunc(n)));
+const FREE_MONTHLY_LIMIT = Number(process.env.FREE_MONTHLY_LIMIT || "10");
+
+// ---------- helpers ----------
+function hasValue(v?: string) {
+  return typeof v === "string" && v.trim().length > 0;
 }
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function monthKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function isProActive(user: any) {
+  if (user?.role === "ADMIN") return true;
+  if (user?.plan === "PRO") {
+    if (!user?.proUntil) return true;
+    return new Date(user.proUntil).getTime() > Date.now();
+  }
+  return false;
+}
+
 function getGeminiKey() {
   return process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
 }
 
-/** Pega status/code e retryDelay mesmo quando vem JSON dentro de message */
-function parseGeminiError(err: any): { status: number | null; message: string; retryAfterSeconds: number | null } {
-  const rawMsg = String(err?.message || err || "");
-  const statusFromObj =
-    (typeof err?.status === "number" && err.status) ||
-    (typeof err?.code === "number" && err.code) ||
-    null;
-
-  let status: number | null = statusFromObj;
-  let message = rawMsg;
-  let retryAfterSeconds: number | null = null;
-
-  // tenta extrair JSON dentro da mensagem
-  const start = rawMsg.indexOf("{");
-  const end = rawMsg.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    const slice = rawMsg.slice(start, end + 1);
-    try {
-      const parsed = JSON.parse(slice);
-      const apiErr = parsed?.error;
-      if (apiErr) {
-        if (typeof apiErr.code === "number") status = apiErr.code;
-        if (typeof apiErr.message === "string") message = apiErr.message;
-
-        const details = Array.isArray(apiErr.details) ? apiErr.details : [];
-        const retryInfo = details.find((d: any) => String(d?.["@type"] || "").includes("RetryInfo"));
-        const retryDelay = retryInfo?.retryDelay;
-        if (retryDelay) {
-          const m = String(retryDelay).match(/([0-9]+(?:\.[0-9]+)?)\s*s/i);
-          if (m) retryAfterSeconds = Math.ceil(Number(m[1]));
-        }
-      }
-    } catch {
-      // ignore
-    }
+function safeParseJson(raw: string) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
   }
-
-  // fallback: "Please retry in XXs"
-  if (!retryAfterSeconds) {
-    const m2 = rawMsg.match(/retry in\s+([0-9.]+)s/i);
-    if (m2) retryAfterSeconds = Math.ceil(Number(m2[1]));
-  }
-
-  return { status, message, retryAfterSeconds };
-}
-
-function isQuota429(err: any) {
-  const p = parseGeminiError(err);
-  if (p.status === 429) return true;
-  const msg = p.message.toLowerCase();
-  return msg.includes("quota exceeded") || msg.includes("resource_exhausted");
-}
-
-function isNotFound404(err: any) {
-  const p = parseGeminiError(err);
-  if (p.status === 404) return true;
-  return p.message.toLowerCase().includes("not found");
-}
-
-function isOverloaded503(err: any) {
-  const p = parseGeminiError(err);
-  if (p.status === 503) return true;
-  const msg = p.message.toLowerCase();
-  return msg.includes("overloaded") || msg.includes("unavailable");
 }
 
 function getStudySchema() {
   return {
     type: "object",
+    additionalProperties: false,
     required: ["topic", "flashcards", "summary"],
     properties: {
       topic: { type: "string" },
-      tags: { type: "array", items: { type: "string" } },
       flashcards: {
         type: "array",
         items: {
           type: "object",
+          additionalProperties: false,
           required: ["id", "question", "answer"],
           properties: {
             id: { type: "integer" },
             question: { type: "string" },
             answer: { type: "string" },
-            difficulty: { type: "string" },
-            tags: { type: "array", items: { type: "string" } },
           },
         },
       },
       summary: {
         type: "object",
-        required: ["title", "mainTopics", "keyPoints"],
+        additionalProperties: false,
+        required: ["title", "style", "difficulty", "mainTopics", "keyPoints"],
         properties: {
           title: { type: "string" },
-          length: { type: "string" },
+          style: { type: "string" },
+          difficulty: { type: "string" },
           mainTopics: {
             type: "array",
             items: {
               type: "object",
+              additionalProperties: false,
               required: ["id", "title", "content", "icon"],
               properties: {
                 id: { type: "integer" },
                 title: { type: "string" },
                 content: { type: "string" },
                 icon: { type: "string" },
-                tags: { type: "array", items: { type: "string" } },
               },
             },
           },
           keyPoints: { type: "array", items: { type: "string" } },
-          sourceQuotes: {
-            type: "array",
-            items: {
-              type: "object",
-              required: ["quote", "whyItMatters"],
-              properties: {
-                quote: { type: "string" },
-                whyItMatters: { type: "string" },
-              },
-            },
-          },
         },
       },
     },
   };
 }
 
-function buildPromptText(params: {
+function buildPromptFromText(params: {
+  text: string;
   flashcardsCount: number;
-  difficulty: Difficulty;
   summaryStyle: SummaryStyle;
-  isImage: boolean;
-  isPdf: boolean;
-  textSnippet?: string;
+  difficulty: CardDifficulty;
 }) {
+  const styleText =
+    params.summaryStyle === "bullet"
+      ? "Resuma em formato de tópicos (bullet points), direto e objetivo."
+      : "Resuma explicado, em texto corrido e bem didático, com exemplos quando fizer sentido.";
+
   const diffText =
-    params.difficulty === "random"
-      ? "Misture dificuldades (easy/medium/hard) e preencha difficulty em cada flashcard."
-      : `Use difficulty="${params.difficulty}" em todos os flashcards.`;
+    params.difficulty === "easy"
+      ? "Flashcards fáceis (definições e perguntas diretas)."
+      : params.difficulty === "hard"
+      ? "Flashcards difíceis (perguntas que exigem raciocínio, aplicação e comparação)."
+      : "Flashcards de dificuldade média (conceitos + aplicação simples).";
 
-  const summaryText =
-    params.summaryStyle === "bullets"
-      ? "Resumo objetivo em bullets curtos."
-      : "Resumo elaborado e explicativo (parágrafos didáticos).";
-
-  const base = `Gere APENAS JSON válido (sem markdown, sem texto fora do JSON).
-
-Regras:
-- Crie EXATAMENTE ${params.flashcardsCount} flashcards.
-- ${diffText}
-- ${summaryText}
-- Preencha summary.length com "short", "medium" ou "long".
-- Use emojis em icon.
-
-Formato:
+  const baseJson = `Retorne APENAS um JSON válido com esta estrutura:
 {
-  "topic": "Tópico principal",
-  "tags": ["tag1"],
-  "flashcards": [{ "id": 1, "question": "...", "answer": "...", "difficulty": "easy" }],
+  "topic": "Tópico principal do material",
+  "flashcards": [
+    { "id": 1, "question": "Pergunta clara e objetiva", "answer": "Resposta completa e educativa" }
+  ],
   "summary": {
-    "title": "Título",
-    "length": "short|medium|long",
-    "mainTopics": [{ "id": 1, "title": "...", "content": "...", "icon": "📌" }],
-    "keyPoints": ["..."],
-    "sourceQuotes": [{ "quote": "...", "whyItMatters": "..." }]
+    "title": "Título do resumo",
+    "style": "${params.summaryStyle}",
+    "difficulty": "${params.difficulty}",
+    "mainTopics": [
+      { "id": 1, "title": "Título do tópico", "content": "Conteúdo detalhado do tópico", "icon": "emoji apropriado" }
+    ],
+    "keyPoints": ["ponto-chave 1", "ponto-chave 2"]
   }
 }`;
 
-  if (!params.isImage && !params.isPdf) {
-    const snippet = (params.textSnippet || "").slice(0, 4000);
-    return `Material (trecho):\n${snippet}\n\n${base}`;
-  }
-  return base;
+  const rules = `Regras:
+- Crie exatamente ${params.flashcardsCount} flashcards.
+- ${diffText}
+- ${styleText}
+- Crie 3 a 5 tópicos principais em summary.mainTopics.
+- Seja educativo e completo.
+- Não inclua texto fora do JSON.`;
+
+  const snippet = params.text.slice(0, 12000);
+
+  return `Analise este conteúdo de estudo e crie material educacional:
+
+${snippet}
+
+${baseJson}
+
+${rules}`;
 }
 
-async function runGeminiOnce(params: {
-  model: string;
-  prompt: string;
-  mimeType: string;
-  base64: string;
-  isImage: boolean;
-  isPdf: boolean;
+function buildPromptForPdfOcr(params: {
+  flashcardsCount: number;
+  summaryStyle: SummaryStyle;
+  difficulty: CardDifficulty;
 }) {
-  const apiKey = getGeminiKey();
-  if (!apiKey.trim()) throw new Error("GEMINI_API_KEY/GOOGLE_API_KEY ausente no .env.local.");
+  // Importante: aqui o conteúdo vem do ARQUIVO PDF anexado (via URI).
+  // Então o prompt não precisa colar o texto; precisa instruir a extrair/OCR.
+  const styleText =
+    params.summaryStyle === "bullet"
+      ? "Resuma em formato de tópicos (bullet points), direto e objetivo."
+      : "Resuma explicado, em texto corrido e bem didático, com exemplos quando fizer sentido.";
 
-  const ai = new GoogleGenAI({ apiKey });
+  const diffText =
+    params.difficulty === "easy"
+      ? "Flashcards fáceis (definições e perguntas diretas)."
+      : params.difficulty === "hard"
+      ? "Flashcards difíceis (perguntas que exigem raciocínio, aplicação e comparação)."
+      : "Flashcards de dificuldade média (conceitos + aplicação simples).";
 
-  const contents =
-    params.isImage || params.isPdf
-      ? [
-          { inlineData: { mimeType: params.mimeType, data: params.base64 } },
-          { text: params.prompt },
-        ]
-      : [{ text: params.prompt }];
+  const baseJson = `Retorne APENAS um JSON válido com esta estrutura:
+{
+  "topic": "Tópico principal do material",
+  "flashcards": [
+    { "id": 1, "question": "Pergunta clara e objetiva", "answer": "Resposta completa e educativa" }
+  ],
+  "summary": {
+    "title": "Título do resumo",
+    "style": "${params.summaryStyle}",
+    "difficulty": "${params.difficulty}",
+    "mainTopics": [
+      { "id": 1, "title": "Título do tópico", "content": "Conteúdo detalhado do tópico", "icon": "emoji apropriado" }
+    ],
+    "keyPoints": ["ponto-chave 1", "ponto-chave 2"]
+  }
+}`;
 
-  const resp = await ai.models.generateContent({
-    model: params.model,
-    contents,
-    config: {
-      systemInstruction: "Você é um assistente educacional. Responda apenas em JSON conforme o schema.",
-      responseMimeType: "application/json",
-      responseJsonSchema: getStudySchema(),
-    },
+  const rules = `Regras:
+- O conteúdo está em um ARQUIVO PDF anexado. Extraia o texto do PDF.
+- Se o PDF for escaneado/imagem, faça OCR e recupere o máximo de texto possível.
+- Crie exatamente ${params.flashcardsCount} flashcards.
+- ${diffText}
+- ${styleText}
+- Crie 3 a 5 tópicos principais em summary.mainTopics.
+- Seja educativo e completo.
+- Não inclua texto fora do JSON.`;
+
+  return `Você é um assistente educacional. Use o PDF anexado como fonte.
+
+${baseJson}
+
+${rules}`;
+}
+
+// ---------- PDF text extraction ----------
+async function extractPdfText(buffer: Buffer) {
+  try {
+    const data = await (pdfParse as any)(buffer);
+    const text = (data?.text || "").replace(/\s+\n/g, "\n").trim();
+    return text;
+  } catch {
+    return "";
+  }
+}
+
+function looksLikeHasRealText(text: string) {
+  // heurística simples: texto suficiente e com “densidade” mínima
+  const t = (text || "").trim();
+  if (t.length < 300) return false;
+  // se quase tudo for caracteres estranhos, também não
+  const weird = t.match(/[^\p{L}\p{N}\p{P}\p{Z}\n\r]/gu)?.length ?? 0;
+  const ratio = weird / Math.max(1, t.length);
+  return ratio < 0.05;
+}
+
+// ---------- quota control ----------
+async function enforceAndIncrementUsage(userId: string) {
+  const now = new Date();
+  const mk = monthKey(now);
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user)
+    throw Object.assign(new Error("Usuário não encontrado."), { status: 401 });
+
+  if (isProActive(user)) {
+    return { ok: true, user, limited: false, remaining: null };
+  }
+
+  const last = user.monthlyResetAt ? monthKey(user.monthlyResetAt) : null;
+  if (last !== mk) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { monthlyUsed: 0, monthlyResetAt: now },
+    });
+    (user as any).monthlyUsed = 0;
+    (user as any).monthlyResetAt = now;
+  }
+
+  if ((user.monthlyUsed ?? 0) >= FREE_MONTHLY_LIMIT) {
+    return { ok: false, user, limited: true, remaining: 0 };
+  }
+
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { monthlyUsed: { increment: 1 } },
   });
 
-  const raw = resp.text || "";
-  if (!raw.trim()) throw new Error("Gemini retornou resposta vazia.");
-  return JSON.parse(raw);
+  const remaining = Math.max(0, FREE_MONTHLY_LIMIT - (updated.monthlyUsed ?? 0));
+  return { ok: true, user: updated, limited: true, remaining };
 }
 
-async function runGeminiWithFallback(params: {
+// ---------- providers ----------
+async function runWithOpenAI(params: { content: any[]; model: string }) {
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  const completion = await openai.chat.completions.create({
+    model: params.model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "Você é um assistente educacional especializado em criar materiais de estudo. Responda sempre com JSON válido e nada além disso.",
+      },
+      { role: "user", content: params.content },
+    ],
+    response_format: { type: "json_object" },
+    max_tokens: 2000,
+  });
+
+  const raw = completion.choices[0]?.message?.content || "";
+  const parsed = safeParseJson(raw);
+  if (!parsed) throw new Error("OpenAI retornou JSON inválido.");
+  return parsed;
+}
+
+async function runWithGeminiText(params: { prompt: string; model: string; retries?: number }) {
+  const ai = new GoogleGenAI({ apiKey: getGeminiKey() });
+  const retries = params.retries ?? 2;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: params.model,
+        contents: params.prompt,
+        config: {
+          systemInstruction:
+            "Você é um assistente educacional especializado em criar materiais de estudo. Responda apenas em JSON seguindo o schema.",
+          responseMimeType: "application/json",
+          responseJsonSchema: getStudySchema(),
+        },
+      });
+
+      const raw = response.text || "";
+      const parsed = safeParseJson(raw);
+      if (!parsed) throw new Error("Gemini retornou JSON inválido.");
+      return parsed;
+    } catch (err: any) {
+      const status = err?.status || err?.code;
+      const msg = (err?.message || "").toString();
+      const overloaded =
+        status === 503 || msg.includes("overloaded") || msg.includes("UNAVAILABLE");
+
+      if (attempt < retries && overloaded) {
+        await sleep(1000 * (attempt + 1) * (attempt + 1));
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error("Falha ao gerar com Gemini.");
+}
+
+async function uploadBufferToTmpFile(buffer: Buffer, ext: string) {
+  const name = `studai-${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`;
+  const tmpPath = path.join(os.tmpdir(), name);
+  await writeFile(tmpPath, buffer);
+  return tmpPath;
+}
+
+async function runWithGeminiPdf(params: {
+  pdfBuffer: Buffer;
   prompt: string;
-  mimeType: string;
-  base64: string;
-  isImage: boolean;
-  isPdf: boolean;
+  model: string;
+  retries?: number;
 }) {
-  // ✅ Lite primeiro. Preferido vem do .env (recomendado: gemini-2.0-flash-lite)
-  const preferred = process.env.GEMINI_MODEL || "gemini-2.0-flash-lite";
-  const models = [
-    preferred,
-    "gemini-2.0-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash",
-    "gemini-flash-latest",
-  ].filter(Boolean);
+  const apiKey = getGeminiKey();
+  if (!apiKey) {
+    throw Object.assign(
+      new Error("GEMINI_API_KEY não configurada (necessária para OCR em PDF escaneado)."),
+      { status: 500 }
+    );
+  }
 
-  let lastErr: any = null;
-  let lastQuota: { retryAfterSeconds: number | null; message: string } | null = null;
+  const ai = new GoogleGenAI({ apiKey });
+  const retries = params.retries ?? 1;
 
-  for (const model of models) {
-    // retry só para 503
-    const retries503 = 2;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    let tmpPath: string | null = null;
 
-    for (let attempt = 0; attempt <= retries503; attempt++) {
-      try {
-        return await runGeminiOnce({ model, ...params });
-      } catch (e: any) {
-        lastErr = e;
+    try {
+      tmpPath = await uploadBufferToTmpFile(params.pdfBuffer, ".pdf");
 
-        // 404 => tenta próximo modelo
-        if (isNotFound404(e)) break;
+      // Upload de PDF (suporta PDF e OCR quando necessário) :contentReference[oaicite:1]{index=1}
+      const myfile = await ai.files.upload({
+        file: tmpPath,
+        config: { mimeType: "application/pdf" },
+      });
 
-        // 429 => guarda info e tenta próximo modelo (SEM esperar 40s no backend)
-        if (isQuota429(e)) {
-          const p = parseGeminiError(e);
-          lastQuota = { retryAfterSeconds: p.retryAfterSeconds, message: p.message };
-          break;
-        }
+      const response = await ai.models.generateContent({
+        model: params.model,
+        contents: createUserContent([
+          createPartFromUri(myfile.uri, myfile.mimeType),
+          "\n\n",
+          params.prompt,
+        ]),
+        config: {
+          systemInstruction:
+            "Você é um assistente educacional especializado em criar materiais de estudo. Responda apenas em JSON seguindo o schema.",
+          responseMimeType: "application/json",
+          responseJsonSchema: getStudySchema(),
+        },
+      });
 
-        // 503 => retry com backoff
-        if (isOverloaded503(e)) {
-          const backoff = 900 * Math.pow(2, attempt) + Math.floor(Math.random() * 250);
-          await sleep(backoff);
-          continue;
-        }
+      const raw = response.text || "";
+      const parsed = safeParseJson(raw);
+      if (!parsed) throw new Error("Gemini retornou JSON inválido.");
+      return parsed;
+    } catch (err: any) {
+      const status = err?.status || err?.code;
+      const msg = (err?.message || "").toString();
+      const overloaded =
+        status === 503 || msg.includes("overloaded") || msg.includes("UNAVAILABLE");
 
-        // outro erro => sobe
-        throw e;
+      if (attempt < retries && overloaded) {
+        await sleep(1000 * (attempt + 1) * (attempt + 1));
+        continue;
+      }
+      throw err;
+    } finally {
+      if (tmpPath) {
+        await unlink(tmpPath).catch(() => {});
       }
     }
   }
 
-  // Se tudo caiu em quota, sobe um erro especial (pra virar 429 na resposta)
-  if (lastQuota) {
-    const err: any = new Error(lastQuota.message || "Quota exceeded");
-    err.status = 429;
-    err.retryAfterSeconds = lastQuota.retryAfterSeconds ?? 45;
-    throw err;
-  }
-
-  throw lastErr || new Error("Falha ao chamar Gemini (todos os modelos falharam).");
+  throw new Error("Falha ao gerar com Gemini a partir do PDF.");
 }
 
+function isRetryableAIError(err: any) {
+  const status = err?.status || err?.code;
+  const msg = (err?.message || "").toString();
+
+  if (status === 429) return true; // rate/quota
+  if (status === 503) return true; // overloaded
+  if (msg.includes("overloaded") || msg.includes("UNAVAILABLE")) return true;
+  if (msg.includes("insufficient_quota")) return true;
+  if (msg.includes("quota")) return true;
+  if (msg.includes("rate")) return true;
+
+  return false;
+}
+
+function pickProviderOrder(): Provider[] {
+  const forced = (process.env.AI_PROVIDER || "auto").toLowerCase();
+
+  const hasOpenAI = hasValue(process.env.OPENAI_API_KEY);
+  const hasGemini = hasValue(process.env.GEMINI_API_KEY) || hasValue(process.env.GOOGLE_API_KEY);
+
+  if (forced === "gemini") {
+    if (!hasGemini)
+      throw Object.assign(new Error("GEMINI_API_KEY não configurada."), { status: 500 });
+    return hasOpenAI ? ["gemini", "openai"] : ["gemini"];
+  }
+
+  if (forced === "openai") {
+    if (!hasOpenAI)
+      throw Object.assign(new Error("OPENAI_API_KEY não configurada."), { status: 500 });
+    return hasGemini ? ["openai", "gemini"] : ["openai"];
+  }
+
+  // auto: Gemini primeiro (evita 429 OpenAI)
+  if (hasGemini && hasOpenAI) return ["gemini", "openai"];
+  if (hasGemini) return ["gemini"];
+  if (hasOpenAI) return ["openai"];
+
+  throw Object.assign(new Error("Nenhuma chave de IA encontrada."), { status: 500 });
+}
+
+// ---------- main ----------
 export async function POST(request: NextRequest) {
   try {
-    // Só gemini aqui (você está usando a key do Google)
-    const apiKey = getGeminiKey();
-    if (!apiKey.trim()) {
+    const current = await requireUser();
+
+    const quota = await enforceAndIncrementUsage(current.id);
+    if (!quota.ok) {
       return NextResponse.json(
-        { success: false, error: "Defina GEMINI_API_KEY/GOOGLE_API_KEY no .env.local." },
-        { status: 500 }
+        {
+          success: false,
+          error: "Limite do plano grátis atingido.",
+          code: "FREE_LIMIT_REACHED",
+          limit: FREE_MONTHLY_LIMIT,
+          remaining: 0,
+        },
+        { status: 402 }
       );
     }
 
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
 
+    const flashcardsCount = Math.min(
+      50,
+      Math.max(1, Number(formData.get("flashcardsCount") || 10))
+    );
+    const summaryStyle = (formData.get("summaryStyle") || "bullet") as SummaryStyle;
+    const difficulty = (formData.get("difficulty") || "medium") as CardDifficulty;
+
     if (!file) {
-      return NextResponse.json({ success: false, error: "Nenhum arquivo foi enviado" }, { status: 400 });
-    }
-
-    const flashcardsCount = clampInt(Number(formData.get("flashcardsCount") || 10), 1, 50);
-    const difficulty = String(formData.get("flashcardsDifficulty") || "random") as Difficulty;
-    const summaryStyle = String(formData.get("summaryStyle") || "bullets") as SummaryStyle;
-
-    const bytes = await file.arrayBuffer();
-    const buffer = Buffer.from(bytes);
-    const mimeType = file.type || "application/octet-stream";
-    const base64 = buffer.toString("base64");
-
-    const isImage = mimeType.startsWith("image/");
-    const isPdf = mimeType === "application/pdf";
-    const textSnippet = !isImage && !isPdf ? buffer.toString("utf-8") : undefined;
-
-    const prompt = buildPromptText({
-      flashcardsCount,
-      difficulty,
-      summaryStyle,
-      isImage,
-      isPdf,
-      textSnippet,
-    });
-
-    const data = await runGeminiWithFallback({ prompt, mimeType, base64, isImage, isPdf });
-    return NextResponse.json({ success: true, data });
-  } catch (error: any) {
-    console.error("Erro ao processar arquivo:", error);
-
-    // ✅ Se for quota, responde 429 (NÃO 500)
-    if (error?.status === 429 || isQuota429(error)) {
-      const p = parseGeminiError(error);
-      const retrySec = error?.retryAfterSeconds ?? p.retryAfterSeconds ?? 45;
-
       return NextResponse.json(
-        {
-          success: false,
-          error: "Limite da cota do Gemini atingido (tier grátis).",
-          details: p.message,
-          retryAfterSeconds: retrySec,
-        },
-        { status: 429, headers: { "Retry-After": String(retrySec) } }
+        { success: false, error: "Nenhum arquivo foi enviado" },
+        { status: 400 }
       );
     }
 
-    const p = parseGeminiError(error);
-    const status = p.status === 503 ? 503 : 500;
+    const bytes = await file.arrayBuffer();
+    const buffer = Buffer.from(bytes);
 
+    const mimeType = file.type || "application/octet-stream";
+    const isPdf =
+      mimeType === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    const isImage = mimeType.startsWith("image/");
+
+    // evita uploads gigantes (especialmente PDF escaneado)
+    const MAX_BYTES = 20 * 1024 * 1024; // 20MB
+    if (buffer.length > MAX_BYTES) {
+      return NextResponse.json(
+        { success: false, error: "Arquivo muito grande (máx. 20MB)." },
+        { status: 413 }
+      );
+    }
+
+    const openaiModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const geminiModel = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const order = pickProviderOrder();
+
+    let parsedResult: any = null;
+    let used: Provider | null = null;
+    let lastErr: any = null;
+
+    // ---------- PDF path ----------
+    if (isPdf) {
+      // 1) tenta extrair texto real
+      const extracted = await extractPdfText(buffer);
+
+      if (looksLikeHasRealText(extracted)) {
+        // PDF com texto: manda o texto pro modelo (sem binário!)
+        const prompt = buildPromptFromText({
+          text: extracted,
+          flashcardsCount,
+          summaryStyle,
+          difficulty,
+        });
+
+        for (const provider of order) {
+          try {
+            if (provider === "gemini") {
+              parsedResult = await runWithGeminiText({
+                prompt,
+                model: geminiModel,
+                retries: 2,
+              });
+              used = "gemini";
+            } else {
+              parsedResult = await runWithOpenAI({
+                content: [{ type: "text", text: prompt }],
+                model: openaiModel,
+              });
+              used = "openai";
+            }
+            break;
+          } catch (err: any) {
+            lastErr = err;
+            if (isRetryableAIError(err)) continue;
+            throw err;
+          }
+        }
+      } else {
+        // 2) PDF sem texto (escaneado): OCR via Gemini (upload do PDF)
+        const prompt = buildPromptForPdfOcr({
+          flashcardsCount,
+          summaryStyle,
+          difficulty,
+        });
+
+        try {
+          parsedResult = await runWithGeminiPdf({
+            pdfBuffer: buffer,
+            prompt,
+            model: geminiModel,
+            retries: 1,
+          });
+          used = "gemini";
+        } catch (err: any) {
+          lastErr = err;
+          const msg = (err?.message || "").toString();
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                "Não foi possível ler este PDF (possivelmente escaneado) agora. Verifique GEMINI_API_KEY e tente novamente.",
+              details: msg,
+              code: "PDF_OCR_FAILED",
+            },
+            { status: 503 }
+          );
+        }
+      }
+    }
+
+    // ---------- IMAGE path ----------
+    if (!parsedResult && isImage) {
+      const base64 = buffer.toString("base64");
+
+      // (para imagem, Gemini geralmente é melhor/mais barato no seu caso)
+      const prompt = buildPromptForPdfOcr({
+        flashcardsCount,
+        summaryStyle,
+        difficulty,
+      }).replace(
+        "Use o PDF anexado como fonte.",
+        "Use a IMAGEM anexada como fonte."
+      );
+
+      for (const provider of order) {
+        try {
+          if (provider === "gemini") {
+            const ai = new GoogleGenAI({ apiKey: getGeminiKey() });
+            const response = await ai.models.generateContent({
+              model: geminiModel,
+              contents: [
+                { inlineData: { mimeType, data: base64 } },
+                { text: prompt },
+              ],
+              config: {
+                systemInstruction:
+                  "Você é um assistente educacional especializado em criar materiais de estudo. Responda apenas em JSON seguindo o schema.",
+                responseMimeType: "application/json",
+                responseJsonSchema: getStudySchema(),
+              },
+            });
+
+            const raw = response.text || "";
+            const parsed = safeParseJson(raw);
+            if (!parsed) throw new Error("Gemini retornou JSON inválido.");
+            parsedResult = parsed;
+            used = "gemini";
+          } else {
+            const content = [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } },
+            ];
+            parsedResult = await runWithOpenAI({ content, model: openaiModel });
+            used = "openai";
+          }
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          if (isRetryableAIError(err)) continue;
+          throw err;
+        }
+      }
+    }
+
+    // ---------- TEXT (non-pdf, non-image) path ----------
+    if (!parsedResult && !isImage && !isPdf) {
+      // aqui só vale se for um arquivo textual (txt/md/etc).
+      // NÃO converta binário pra utf-8.
+      const text = buffer.toString("utf-8").trim();
+
+      if (!text || text.length < 50) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "Não foi possível extrair texto deste arquivo. Envie um PDF, imagem, ou texto (txt/md).",
+          },
+          { status: 400 }
+        );
+      }
+
+      const prompt = buildPromptFromText({
+        text,
+        flashcardsCount,
+        summaryStyle,
+        difficulty,
+      });
+
+      for (const provider of order) {
+        try {
+          if (provider === "gemini") {
+            parsedResult = await runWithGeminiText({
+              prompt,
+              model: geminiModel,
+              retries: 2,
+            });
+            used = "gemini";
+          } else {
+            parsedResult = await runWithOpenAI({
+              content: [{ type: "text", text: prompt }],
+              model: openaiModel,
+            });
+            used = "openai";
+          }
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          if (isRetryableAIError(err)) continue;
+          throw err;
+        }
+      }
+    }
+
+    // ---------- post-check ----------
+    if (!parsedResult) {
+      const msg = (lastErr?.message || "").toString();
+      return NextResponse.json(
+        { success: false, error: "Falha ao gerar com IA.", details: msg },
+        { status: 503 }
+      );
+    }
+
+    if (!parsedResult?.topic || !parsedResult?.flashcards || !parsedResult?.summary) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "Resposta inválida do modelo (faltou topic/flashcards/summary).",
+          code: "INVALID_AI_RESPONSE",
+          raw: parsedResult,
+        },
+        { status: 502 }
+      );
+    }
+
+    await prisma.studyMaterial.create({
+      data: {
+        userId: current.id,
+        topic: String(parsedResult.topic || "Material"),
+        originalFilename: file.name,
+        mimeType,
+        data: parsedResult,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      provider: used,
+      remaining: quota.limited && typeof quota.remaining === "number" ? quota.remaining : null,
+      data: parsedResult,
+    });
+  } catch (error: any) {
+    const status = error?.status || 500;
+    const msg = (error?.message || "").toString();
+
+    if (status === 401) {
+      return NextResponse.json(
+        { success: false, error: "Não autorizado." },
+        { status: 401 }
+      );
+    }
+
+    console.error("Erro ao processar arquivo:", error);
     return NextResponse.json(
-      { success: false, error: "Erro ao processar o arquivo", details: p.message },
-      { status }
+      { success: false, error: "Erro ao processar o arquivo", details: msg },
+      { status: status >= 400 && status <= 599 ? status : 500 }
     );
   }
 }

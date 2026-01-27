@@ -77,14 +77,19 @@ __turbopack_context__.s({
 });
 var __TURBOPACK__imported__module__$5b$externals$5d2f40$prisma$2f$client__$5b$external$5d$__$2840$prisma$2f$client$2c$__cjs$29$__ = __turbopack_context__.i("[externals]/@prisma/client [external] (@prisma/client, cjs)");
 ;
-const globalForPrisma = globalThis;
-const prisma = globalForPrisma.prisma ?? new __TURBOPACK__imported__module__$5b$externals$5d2f40$prisma$2f$client__$5b$external$5d$__$2840$prisma$2f$client$2c$__cjs$29$__["PrismaClient"]({
-    log: [
-        "error",
-        "warn"
-    ]
-});
-if ("TURBOPACK compile-time truthy", 1) globalForPrisma.prisma = prisma;
+function createPrismaClient() {
+    const client = new __TURBOPACK__imported__module__$5b$externals$5d2f40$prisma$2f$client__$5b$external$5d$__$2840$prisma$2f$client$2c$__cjs$29$__["PrismaClient"]({
+        log: ("TURBOPACK compile-time truthy", 1) ? [
+            "error",
+            "warn"
+        ] : "TURBOPACK unreachable"
+    });
+    return client;
+}
+const prisma = globalThis.__prisma ?? createPrismaClient();
+if ("TURBOPACK compile-time truthy", 1) {
+    globalThis.__prisma = prisma;
+}
 }),
 "[externals]/crypto [external] (crypto, cjs)": ((__turbopack_context__) => {
 
@@ -98,15 +103,14 @@ module.exports = mod;
 "use strict";
 
 __turbopack_context__.s({
+    "clearSessionCookie": ()=>clearSessionCookie,
     "createSession": ()=>createSession,
     "destroySession": ()=>destroySession,
     "getCurrentUser": ()=>getCurrentUser,
     "hashPassword": ()=>hashPassword,
     "isAdminEmail": ()=>isAdminEmail,
-    "makeSessionToken": ()=>makeSessionToken,
-    "requireAdmin": ()=>requireAdmin,
     "requireUser": ()=>requireUser,
-    "sessionExpiryDate": ()=>sessionExpiryDate,
+    "setSessionCookie": ()=>setSessionCookie,
     "verifyPassword": ()=>verifyPassword
 });
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/headers.js [app-route] (ecmascript)");
@@ -119,32 +123,22 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__
 ;
 const SESSION_COOKIE = "studai_session";
 const SESSION_DAYS = 30;
-function parseAdminEmails() {
-    const raw = process.env.ADMIN_EMAILS || "";
-    return raw.split(",").map((s)=>s.trim().toLowerCase()).filter(Boolean);
-}
 function isAdminEmail(email) {
-    const admins = parseAdminEmails();
-    return admins.includes(email.toLowerCase());
+    const one = (process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+    if (one && email.toLowerCase() === one) return true;
+    const many = (process.env.ADMIN_EMAILS || "").split(",").map((s)=>s.trim().toLowerCase()).filter(Boolean);
+    if (many.length && many.includes(email.toLowerCase())) return true;
+    return false;
 }
-async function hashPassword(plain) {
-    const saltRounds = 12;
-    return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$bcryptjs$2f$index$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["default"].hash(plain, saltRounds);
+async function hashPassword(password) {
+    return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$bcryptjs$2f$index$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["default"].hash(password, 10);
 }
-async function verifyPassword(plain, hash) {
-    return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$bcryptjs$2f$index$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["default"].compare(plain, hash);
+async function verifyPassword(password, passwordHash) {
+    return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$bcryptjs$2f$index$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["default"].compare(password, passwordHash);
 }
-function makeSessionToken() {
-    return (0, __TURBOPACK__imported__module__$5b$externals$5d2f$crypto__$5b$external$5d$__$28$crypto$2c$__cjs$29$__["randomBytes"])(32).toString("hex");
-}
-function sessionExpiryDate() {
-    const d = new Date();
-    d.setDate(d.getDate() + SESSION_DAYS);
-    return d;
-}
-async function createSession(userId) {
-    const sessionToken = makeSessionToken();
-    const expires = sessionExpiryDate();
+async function createSession(userId, days = SESSION_DAYS) {
+    const sessionToken = (0, __TURBOPACK__imported__module__$5b$externals$5d2f$crypto__$5b$external$5d$__$28$crypto$2c$__cjs$29$__["randomBytes"])(32).toString("hex");
+    const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
     await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].session.create({
         data: {
             userId,
@@ -152,30 +146,34 @@ async function createSession(userId) {
             expires
         }
     });
-    // seta cookie (httpOnly)
-    const cookieStore = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["cookies"])();
-    cookieStore.set(SESSION_COOKIE, sessionToken, {
-        httpOnly: true,
-        sameSite: "lax",
-        secure: ("TURBOPACK compile-time value", "development") === "production",
-        path: "/",
-        expires
-    });
     return {
         sessionToken,
         expires
     };
 }
-async function destroySession() {
-    const cookieStore = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["cookies"])();
-    const token = cookieStore.get(SESSION_COOKIE)?.value;
-    if (token) {
-        await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].session.deleteMany({
+async function destroySession(sessionToken) {
+    try {
+        await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].session.delete({
             where: {
-                sessionToken: token
+                sessionToken
             }
         });
+    } catch  {
+    // ignore
     }
+}
+async function setSessionCookie(params) {
+    const cookieStore = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["cookies"])();
+    cookieStore.set(SESSION_COOKIE, params.token, {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: ("TURBOPACK compile-time value", "development") === "production",
+        path: "/",
+        expires: params.expires
+    });
+}
+async function clearSessionCookie() {
+    const cookieStore = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["cookies"])();
     cookieStore.set(SESSION_COOKIE, "", {
         httpOnly: true,
         sameSite: "lax",
@@ -185,50 +183,41 @@ async function destroySession() {
     });
 }
 async function getCurrentUser() {
-    const cookieStore = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["cookies"])();
-    const token = cookieStore.get(SESSION_COOKIE)?.value;
-    if (!token) return null;
-    const session = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].session.findUnique({
-        where: {
-            sessionToken: token
-        },
-        include: {
-            user: true
-        }
-    });
-    if (!session) return null;
-    // Expirada
-    if (session.expires.getTime() < Date.now()) {
-        await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].session.deleteMany({
+    try {
+        const cookieStore = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["cookies"])();
+        const token = cookieStore.get(SESSION_COOKIE)?.value;
+        if (!token) return null;
+        const session = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].session.findUnique({
             where: {
                 sessionToken: token
+            },
+            include: {
+                user: true
             }
         });
+        if (!session) return null;
+        if (session.expires && session.expires.getTime() < Date.now()) {
+            return null;
+        }
+        if (!session.user) return null;
+        return {
+            id: session.user.id,
+            email: session.user.email,
+            role: session.user.role,
+            name: session.user.name ?? null
+        };
+    } catch  {
+        console.warn("[auth] DB indisponível, retornando user=null");
         return null;
     }
-    // Se email estiver na lista ADMIN_EMAILS, garante role ADMIN
-    const user = session.user;
-    if (user.email && isAdminEmail(user.email) && user.role !== "ADMIN") {
-        await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].user.update({
-            where: {
-                id: user.id
-            },
-            data: {
-                role: "ADMIN"
-            }
-        });
-        user.role = "ADMIN";
-    }
-    return user;
 }
 async function requireUser() {
     const user = await getCurrentUser();
-    if (!user) throw new Error("UNAUTHORIZED");
-    return user;
-}
-async function requireAdmin() {
-    const user = await requireUser();
-    if (user.role !== "ADMIN") throw new Error("FORBIDDEN");
+    if (!user) {
+        const err = new Error("Não autorizado");
+        err.status = 401;
+        throw err;
+    }
     return user;
 }
 }),
@@ -249,7 +238,7 @@ const runtime = "nodejs";
 async function POST(req) {
     try {
         const body = await req.json().catch(()=>null);
-        const email = (body?.email || "").toString().trim().toLowerCase();
+        const email = (body?.email || body?.username || "").toString().trim().toLowerCase();
         const password = (body?.password || "").toString();
         if (!email || !password) {
             return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
@@ -259,11 +248,24 @@ async function POST(req) {
                 status: 400
             });
         }
-        const user = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].user.findUnique({
-            where: {
-                email
-            }
-        });
+        // ✅ tenta buscar usuário
+        let user = null;
+        try {
+            user = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].user.findUnique({
+                where: {
+                    email
+                }
+            });
+        } catch (dbErr) {
+            console.error("LOGIN_DB_FIND_ERROR:", dbErr);
+            return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
+                success: false,
+                error: "Banco de dados indisponível no momento. Tente novamente.",
+                details: dbErr?.message || String(dbErr)
+            }, {
+                status: 503
+            });
+        }
         if (!user || !user.passwordHash) {
             return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
                 success: false,
@@ -283,18 +285,40 @@ async function POST(req) {
         }
         // garante admin se o email estiver na lista
         if ((0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["isAdminEmail"])(user.email) && user.role !== "ADMIN") {
-            await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].user.update({
-                where: {
-                    id: user.id
-                },
-                data: {
-                    role: "ADMIN"
-                }
-            });
-            user.role = "ADMIN";
+            try {
+                await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["prisma"].user.update({
+                    where: {
+                        id: user.id
+                    },
+                    data: {
+                        role: "ADMIN"
+                    }
+                });
+                user.role = "ADMIN";
+            } catch (dbErr) {
+                console.error("LOGIN_DB_ADMIN_UPDATE_ERROR:", dbErr);
+            // não bloqueia login por isso
+            }
         }
-        await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["createSession"])(user.id);
-        return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
+        // ✅ cria sessão
+        let sessionToken = "";
+        let expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        try {
+            const s = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2e$ts__$5b$app$2d$route$5d$__$28$ecmascript$29$__["createSession"])(user.id);
+            sessionToken = s.sessionToken;
+            expires = s.expires;
+        } catch (dbErr) {
+            console.error("LOGIN_DB_SESSION_ERROR:", dbErr);
+            return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
+                success: false,
+                error: "Não foi possível criar sessão (banco indisponível). Tente novamente.",
+                details: dbErr?.message || String(dbErr)
+            }, {
+                status: 503
+            });
+        }
+        // ✅ seta cookie na resposta (mais confiável)
+        const res = __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({
             success: true,
             user: {
                 id: user.id,
@@ -303,6 +327,14 @@ async function POST(req) {
                 role: user.role
             }
         });
+        res.cookies.set("studai_session", sessionToken, {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: ("TURBOPACK compile-time value", "development") === "production",
+            path: "/",
+            expires
+        });
+        return res;
     } catch (err) {
         console.error("LOGIN_ERROR:", err);
         return __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$server$2e$js__$5b$app$2d$route$5d$__$28$ecmascript$29$__["NextResponse"].json({

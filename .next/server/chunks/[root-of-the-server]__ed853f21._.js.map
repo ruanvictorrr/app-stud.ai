@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 6, "column": 0}, "map": {"version":3,"sources":[],"names":[],"mappings":"","debugId":null}},
+    {"offset": {"line": 66, "column": 0}, "map": {"version":3,"sources":["file:///Users/ruangalvao/ProjetosVS/Projetos%20Pessoais/stud.ai-app/app-stud.ai/src/app/api/auth/logout/route.ts"],"sourcesContent":["import { NextResponse } from \"next/server\";\n\nexport const runtime = \"nodejs\";\n\nexport async function POST() {\n  const res = NextResponse.json({ success: true });\n\n  res.cookies.set(\"studai_session\", \"\", {\n    path: \"/\",\n    maxAge: 0,\n  });\n\n  return res;\n}\n"],"names":[],"mappings":";;;;AAAA;;AAEO,MAAM,UAAU;AAEhB,eAAe;IACpB,MAAM,MAAM,gIAAA,CAAA,eAAY,CAAC,IAAI,CAAC;QAAE,SAAS;IAAK;IAE9C,IAAI,OAAO,CAAC,GAAG,CAAC,kBAAkB,IAAI;QACpC,MAAM;QACN,QAAQ;IACV;IAEA,OAAO;AACT","debugId":null}}]
+}
